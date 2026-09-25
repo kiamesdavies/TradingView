@@ -157,6 +157,13 @@ export interface Tick {
   price: number;
   volume: number;       // trade size for this tick (0 for forex quotes)
   time: number;         // unix MILLISECONDS
+  /**
+   * Set only on a tick the server coalesced from several upstream trades (all within one UTC minute):
+   * first/highest/lowest price of that window. `price`/`time` are the last trade's.
+   */
+  open?: number;
+  high?: number;
+  low?: number;
 }
 
 export type ServerMsg =

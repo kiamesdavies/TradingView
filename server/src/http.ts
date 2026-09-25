@@ -1,6 +1,6 @@
 // Minimal router for Bun.serve. Modules call register(router) to add their routes.
 export type Params = Record<string, string>;
-export type Handler = (req: Request, params: Params, url: URL, server: import("bun").Server) => Response | Promise<Response>;
+export type Handler = (req: Request, params: Params, url: URL, server: import("bun").Server<any>) => Response | Promise<Response>;
 
 type Method = "GET" | "POST" | "PUT" | "DELETE";
 interface Route { method: Method; parts: string[]; handler: Handler }
@@ -13,7 +13,13 @@ export function error(status: number, message: string, detail?: string): Respons
   return json({ error: message, ...(detail ? { detail } : {}) }, status);
 }
 
+/**
+ * Parse a JSON body. The body must be declared `application/json`: that makes cross-site browser requests
+ * non-"simple", so they need a CORS preflight this server never grants (text/plain and blob bodies don't).
+ */
 export async function readJson<T>(req: Request): Promise<T> {
+  const type = (req.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+  if (type !== "application/json" && !type.endsWith("+json")) throw new HttpError(415, "content-type must be application/json");
   try {
     return (await req.json()) as T;
   } catch {
@@ -36,7 +42,7 @@ export class Router {
   put(path: string, h: Handler) { this.add("PUT", path, h); }
   delete(path: string, h: Handler) { this.add("DELETE", path, h); }
 
-  async handle(req: Request, server: import("bun").Server): Promise<Response | null> {
+  async handle(req: Request, server: import("bun").Server<any>): Promise<Response | null> {
     const url = new URL(req.url);
     const parts = url.pathname.split("/").filter(Boolean);
     for (const r of this.routes) {

@@ -8,6 +8,7 @@ import * as storeRoutes from "./routes/store";
 import * as alertRoutes from "./routes/alerts";
 import { hub } from "./realtime/hub";
 import { startAlertEngine } from "./alerts/engine";
+import { isAllowedOrigin, needsOriginCheck, originInputFrom, parseAllowedOrigins } from "./origin";
 
 const router = new Router();
 marketRoutes.register(router);
@@ -15,6 +16,9 @@ configRoutes.register(router);
 storeRoutes.register(router);
 alertRoutes.register(router);
 startAlertEngine();
+
+/** Extra browser origins allowed to open /ws and send state-changing /api requests. */
+const ALLOWED_ORIGINS = parseAllowedOrigins(process.env.EODVIEW_ALLOWED_ORIGINS);
 
 const DIST = join(import.meta.dir, "..", "..", "client", "dist");
 const serveStatic = existsSync(DIST);
@@ -24,10 +28,16 @@ const server = Bun.serve<{ id: string }>({
   async fetch(req, server) {
     const url = new URL(req.url);
     if (url.pathname === "/ws") {
+      // Browsers don't apply CORS to websockets: without this any page could read the feed and alert events.
+      if (!isAllowedOrigin(originInputFrom(req, ALLOWED_ORIGINS))) return error(403, "origin not allowed");
       if (server.upgrade(req, { data: { id: crypto.randomUUID() } })) return undefined;
       return error(400, "websocket upgrade failed");
     }
     if (url.pathname.startsWith("/api/")) {
+      // Blocks cross-site "simple" POSTs (no preflight) that would otherwise create alerts/watchlists.
+      if (needsOriginCheck(req.method) && !isAllowedOrigin(originInputFrom(req, ALLOWED_ORIGINS))) {
+        return error(403, "origin not allowed");
+      }
       return (await router.handle(req, server)) ?? error(404, "not found");
     }
     if (serveStatic) {

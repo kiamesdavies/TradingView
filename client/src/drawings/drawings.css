@@ -1,0 +1,85 @@
+/* Drawing toolbar (module C3). Dark by default; follows [data-theme="light"] on an ancestor when present. */
+.drw-toolbar {
+  --drw-bg: #131722;
+  --drw-fg: #b2b5be;
+  --drw-fg-hover: #d1d4dc;
+  --drw-hover: #2a2e39;
+  --drw-active-bg: #1e2a4a;
+  --drw-active-fg: #2962ff;
+  --drw-border: #2a2e39;
+  --drw-danger: #f23645;
+
+  box-sizing: border-box;
+  width: 44px;
+  flex: 0 0 44px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 0;
+  background: var(--drw-bg);
+  border-right: 1px solid var(--drw-border);
+  user-select: none;
+}
+
+[data-theme="light"] .drw-toolbar {
+  --drw-bg: #ffffff;
+  --drw-fg: #434651;
+  --drw-fg-hover: #131722;
+  --drw-hover: #f0f3fa;
+  --drw-active-bg: #e3effd;
+  --drw-border: #e0e3eb;
+}
+
+.drw-btn {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--drw-fg);
+  cursor: pointer;
+}
+.drw-btn:hover:not(:disabled) { background: var(--drw-hover); color: var(--drw-fg-hover); }
+.drw-btn:focus-visible { outline: 1px solid var(--drw-active-fg); outline-offset: -1px; }
+.drw-btn--active,
+.drw-btn--active:hover:not(:disabled) { background: var(--drw-active-bg); color: var(--drw-active-fg); }
+.drw-btn--danger:hover:not(:disabled) { color: var(--drw-danger); }
+.drw-btn:disabled { opacity: 0.35; cursor: default; }
+
+.drw-sep { width: 24px; height: 1px; margin: 4px 0; background: var(--drw-border); }
+.drw-spacer { flex: 1 1 auto; }
+
+.drw-color {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.drw-color:hover { background: var(--drw-hover); }
+.drw-color__swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--drw-border);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3);
+}
+.drw-color input[type="color"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  border: 0;
+  padding: 0;
+}
