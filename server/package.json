@@ -1,0 +1,7 @@
+{
+  "name": "server",
+  "private": true,
+  "type": "module",
+  "scripts": { "dev": "bun --watch src/index.ts", "test": "bun test" },
+  "dependencies": { "@eodview/shared": "workspace:*" }
+}

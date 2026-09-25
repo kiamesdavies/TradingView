@@ -1,0 +1,1 @@
+{ "name": "@eodview/shared", "private": true, "type": "module", "main": "src/types.ts", "types": "src/types.ts" }

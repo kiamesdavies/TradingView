@@ -1,0 +1,13 @@
+{
+  "name": "eodview",
+  "private": true,
+  "workspaces": ["shared", "server", "client"],
+  "scripts": {
+    "dev": "bun run --filter server dev & bun run --filter client dev; wait",
+    "build": "bun run --filter client build",
+    "start": "NODE_ENV=production bun run server/src/index.ts",
+    "test": "bun test",
+    "typecheck": "bun x tsc -p server --noEmit && bun x tsc -p client --noEmit"
+  },
+  "devDependencies": { "typescript": "^5.6.0", "@types/bun": "latest" }
+}
