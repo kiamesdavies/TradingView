@@ -6,9 +6,11 @@ import {
   parseActions,
   parseBulk,
   parseEarningsCalendar,
+  parseExchangeDetails,
   parseIndexComponents,
   parseNews,
 } from "./parsers";
+import { getMarket } from "./markets";
 import { parseEod } from "./jobs";
 
 describe("symbol list", () => {
@@ -100,7 +102,56 @@ describe("index components and news", () => {
     ]);
     expect(r.count).toBe(2);
     expect(r.latest.get("MSFT.US")).toBe(Date.parse("2026-09-25T12:16:38Z") / 1000);
-    expect(r.latest.has("ORC.HM")).toBe(false);
+    expect(r.latest.has("ORC.HM")).toBe(true); // any exchange; the news job keeps universe symbols only
     expect(r.oldest).toBe(Date.parse("2026-09-25T10:00:00Z") / 1000);
+  });
+});
+
+describe("v3 multi-market parsing", () => {
+  test("non-US symbol lists: stocks in the market currency, LSE pence lines without IOB codes", () => {
+    const st = filterSymbolList([
+      { Code: "SIVE", Name: "Sivers", Exchange: "ST", Type: "Common Stock", Currency: "SEK", Isin: "SE0003917798" },
+      { Code: "NOKIA-SEK", Name: "Nokia", Exchange: "ST", Type: "Common Stock", Currency: "EUR" },
+      { Code: "XACT", Name: "XACT OMXS30", Exchange: "ST", Type: "ETF", Currency: "SEK" },
+      { Code: "FND", Name: "Fund", Exchange: "ST", Type: "FUND", Currency: "SEK" },
+    ], getMarket("ST")!);
+    expect(st).toEqual([{ symbol: "SIVE.ST", code: "SIVE", name: "Sivers", exchange: "ST", kind: "stock", isin: "SE0003917798", currency: "SEK" }]);
+    const lse = filterSymbolList([
+      { Code: "LLOY", Name: "Lloyds", Exchange: "LSE", Type: "Common Stock", Currency: "GBX" },
+      { Code: "0R2V", Name: "Apple IOB", Exchange: "LSE", Type: "Common Stock", Currency: "GBX" },
+      { Code: "CPG", Name: "Compass USD line", Exchange: "LSE", Type: "Common Stock", Currency: "USD" },
+      { Code: "VUSA", Name: "Vanguard S&P 500", Exchange: "LSE", Type: "ETF", Currency: "GBP" },
+    ], getMarket("LSE")!);
+    expect(lse.map((r) => `${r.symbol}:${r.currency}`)).toEqual(["LLOY.LSE:GBX"]);
+  });
+
+  test("index components keep non-US codes", () => {
+    expect(parseIndexComponents({ "0": { Code: "AZN", Exchange: "ST" }, "1": { Code: "BT.A", Exchange: "LSE" }, "2": { Code: "005930", Exchange: "KO" } }))
+      .toEqual(["AZN.ST", "BT.A.LSE", "005930.KO"]);
+  });
+
+  test("earnings calendar: accepted symbols, per-market today", () => {
+    const raw = { earnings: [
+      { code: "SIVE.ST", report_date: "2026-09-26", before_after_market: "BeforeMarket", actual: null },
+      { code: "AAPL.US", report_date: "2026-09-26", before_after_market: "AfterMarket", actual: null },
+      { code: "SAP.XETRA", report_date: "2026-09-26", actual: null },
+    ] };
+    const rows = parseEarningsCalendar(raw, (s) => s.endsWith(".US") || s.endsWith(".ST"));
+    expect(rows.map((r) => r.symbol)).toEqual(["SIVE.ST", "AAPL.US"]);
+    expect(parseEarningsCalendar(raw).map((r) => r.symbol)).toEqual(["AAPL.US"]); // v2 default
+    // Stockholm is already on the 27th, New York still on the 26th
+    const by = earningsBySymbol(rows, (s) => (s.endsWith(".ST") ? "2026-09-27" : "2026-09-26"));
+    expect(by.get("SIVE.ST")).toEqual({ next: null, last: "2026-09-26" });
+    expect(by.get("AAPL.US")!.next).toEqual({ date: "2026-09-26", timing: "amc" });
+  });
+
+  test("exchange details → holidays, zone, close", () => {
+    const d = parseExchangeDetails({
+      Timezone: "Europe/Stockholm",
+      ExchangeHolidays: { "0": { Holiday: "Christmas", Date: "2026-12-25", Type: "official" }, "1": { Holiday: "x", Date: "bad" } },
+      TradingHours: { Open: "09:00:00", Close: "17:30:00", WorkingDays: "Mon,Tue,Wed,Thu,Fri" },
+    });
+    expect(d).toEqual({ timezone: "Europe/Stockholm", close: "17:30", holidays: ["2026-12-25"], workingDays: "Mon,Tue,Wed,Thu,Fri" });
+    expect(parseExchangeDetails(null)).toEqual({ timezone: null, close: null, holidays: [], workingDays: null });
   });
 });

@@ -24,6 +24,8 @@ export const DEFAULT_SORT = { column: "ticker", dir: "asc" as SortDir };
 
 export interface ScreenerState {
   filters: ScreenerFilterValue[];
+  /** v3: market code ("US", "ST", …) or "ALL". */
+  market: string;
   universe: ScreenerUniverse;
   tickers: string;
   view: string;
@@ -36,8 +38,12 @@ export interface ScreenerState {
   presetId: string | null;
 }
 
+export const DEFAULT_MARKET = "US";
+export const ALL_MARKETS = "ALL";
+
 export const DEFAULT_STATE: ScreenerState = {
   filters: [],
+  market: DEFAULT_MARKET,
   universe: "stocks",
   tickers: "",
   view: "overview",
@@ -88,6 +94,31 @@ export function resetFilters(s: ScreenerState): ScreenerState {
 
 export function setUniverse(s: ScreenerState, universe: ScreenerUniverse): ScreenerState {
   return universe === s.universe ? s : { ...s, universe, page: 1 };
+}
+
+/** Switching market keeps every filter (unavailable ones are just not sent) and resets to page 1. */
+export function setMarket(s: ScreenerState, market: string): ScreenerState {
+  const m = sanitizeMarket(market);
+  return m === s.market ? s : { ...s, market: m, page: 1 };
+}
+
+/** Market codes are short upper-case EODHD exchange codes ("US", "ST", "LSE", "XETRA") or "ALL". */
+export function sanitizeMarket(raw: unknown): string {
+  if (typeof raw !== "string") return DEFAULT_MARKET;
+  const m = raw.trim().toUpperCase();
+  return /^[A-Z0-9]{1,12}$/.test(m) ? m : DEFAULT_MARKET;
+}
+
+/** Filters that the current meta marks unavailable (kept in state, excluded from the query). */
+export function unavailableFilterIds(filters: ScreenerFilterValue[], defs: ScreenerFilterDef[] | undefined): Set<string> {
+  const out = new Set<string>();
+  if (!defs) return out;
+  const byId = new Map(defs.map((d) => [d.id, d]));
+  for (const f of filters) {
+    const d = byId.get(f.id);
+    if (d && !d.available) out.add(f.id);
+  }
+  return out;
 }
 
 export function setTickers(s: ScreenerState, tickers: string): ScreenerState {
@@ -147,10 +178,20 @@ export function normalizeTickers(text: string): string | undefined {
   return list.length ? [...new Set(list)].join(", ") : undefined;
 }
 
-export function toQuery(s: ScreenerState, overrides: Partial<Pick<ScreenerQuery, "offset" | "limit">> = {}): ScreenerQuery {
+/**
+ * Build the request body. When `defs` (the current market's filter defs) is given, filters that are unavailable for
+ * that market are left out; without it every filter is included (presets keep the user's full state).
+ */
+export function toQuery(
+  s: ScreenerState,
+  overrides: Partial<Pick<ScreenerQuery, "offset" | "limit">> = {},
+  defs?: ScreenerFilterDef[],
+): ScreenerQuery {
   const tickers = normalizeTickers(s.tickers);
+  const skip = unavailableFilterIds(s.filters, defs);
   return {
-    filters: s.filters.filter((f) => !isEmptyFilter(f)),
+    filters: s.filters.filter((f) => !isEmptyFilter(f) && !skip.has(f.id)),
+    market: s.market,
     universe: s.universe,
     ...(tickers ? { tickers } : {}),
     view: s.view === CHARTS_VIEW ? CHARTS_QUERY_VIEW : s.view,
@@ -162,7 +203,7 @@ export function toQuery(s: ScreenerState, overrides: Partial<Pick<ScreenerQuery,
 
 /** Key of everything that changes the result *set* (not paging/sort/view) — used to debounce filter edits. */
 export function filterKey(s: ScreenerState): string {
-  return JSON.stringify([s.filters, s.universe, normalizeTickers(s.tickers) ?? ""]);
+  return JSON.stringify([s.filters, s.market, s.universe, normalizeTickers(s.tickers) ?? ""]);
 }
 
 export function presetQuery(s: ScreenerState): ScreenerPreset["query"] {
@@ -176,6 +217,8 @@ export function applyPreset(s: ScreenerState, p: ScreenerPreset): ScreenerState 
   const next = sanitizeState({
     ...s,
     filters: q.filters ?? [],
+    // v2 presets have no market: apply them to the market currently selected
+    market: q.market ?? s.market,
     universe: q.universe ?? "stocks",
     tickers: q.tickers ?? "",
     view: q.view || s.view,
@@ -249,6 +292,7 @@ export function sanitizeState(raw: unknown): ScreenerState {
   const tab = FILTER_TABS.some((t) => t.id === raw.tab) ? (raw.tab as FilterTab) : DEFAULT_STATE.tab;
   return {
     filters,
+    market: raw.market === undefined ? DEFAULT_MARKET : sanitizeMarket(raw.market),
     universe,
     tickers: typeof raw.tickers === "string" ? raw.tickers.slice(0, 2000) : "",
     view: typeof raw.view === "string" && raw.view ? raw.view : DEFAULT_STATE.view,

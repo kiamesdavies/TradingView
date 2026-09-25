@@ -10,6 +10,7 @@ import {
   type EodhdUser,
   type IntradayInterval,
 } from "./mappers";
+import { callMeter } from "./meter";
 import { EodhdError, InFlight, eodhdGet, noKeyError, requestKey, type FetchFn, type QueryValue } from "./request";
 
 /** Max span (seconds) EODHD serves in one intraday request. */
@@ -40,7 +41,12 @@ export function createEodhdClient(getKey: () => string | null, fetchFn: FetchFn 
     if (!key) return Promise.reject(noKeyError());
     // The de-dupe key includes a key fingerprint so a key swap never reuses a request made with the old key.
     const dedupe = `${key.length}:${key.slice(-4)}|${requestKey(path, params)}`;
-    return inflight.run(dedupe, () => eodhdGet(path, params, key, what, fetchFn));
+    // A metered caller (callMeter.run) is charged only for requests that actually go upstream, not for joining
+    // an identical request already in flight.
+    return inflight.run(dedupe, async () => {
+      callMeter.getStore()?.charge(path, params);
+      return eodhdGet(path, params, key, what, fetchFn);
+    });
   }
 
   const seg = (s: string): string => encodeURIComponent(s.trim());

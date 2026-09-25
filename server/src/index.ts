@@ -9,6 +9,8 @@ import * as alertRoutes from "./routes/alerts";
 import * as detailsRoutes from "./routes/details";
 import * as screenerRoutes from "./routes/screener";
 import * as universeRoutes from "./routes/universe";
+import * as agentRoutes from "./routes/agent";
+import * as tokenRoutes from "./routes/tokens";
 import { startUniverseScheduler } from "./universe/scheduler";
 import { hub } from "./realtime/hub";
 import { startAlertEngine } from "./alerts/engine";
@@ -22,6 +24,8 @@ alertRoutes.register(router);
 detailsRoutes.register(router);
 screenerRoutes.register(router);
 universeRoutes.register(router);
+agentRoutes.register(router);
+tokenRoutes.register(router);
 startAlertEngine();
 if (process.env.EODVIEW_UNIVERSE !== "off") startUniverseScheduler();
 
@@ -42,7 +46,7 @@ const server = Bun.serve<{ id: string }>({
       if (server.upgrade(req, { data: { id: crypto.randomUUID() } })) return undefined;
       return error(400, "websocket upgrade failed");
     }
-    if (url.pathname.startsWith("/api/")) {
+    if ((url.pathname.startsWith("/api/") || url.pathname === "/mcp")) {
       // Blocks cross-site "simple" POSTs (no preflight) that would otherwise create alerts/watchlists.
       if (needsOriginCheck(req.method) && !isAllowedOrigin(originInputFrom(req, ALLOWED_ORIGINS))) {
         return error(403, "origin not allowed");

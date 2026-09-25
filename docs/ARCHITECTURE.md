@@ -106,3 +106,22 @@ Owns `client/src/details/**`.
 
 ### C7 — Screener page
 Owns `client/src/screener/**`.
+
+---
+
+# v3 modules (multi-market, per-ticker history, agent API)
+
+Contract additions: `shared/src/types.ts` "v3" section, `ScreenerQuery.market`, `ScreenerMeta.markets/market`, `ScreenerFilterDef.code`.
+
+### P — Pipeline (multi-market + per-ticker history)
+Owns `server/src/universe/**` **including metricsSchema.ts** (now the pipeline owner may add columns: `market`, `market_cap_usd`, `dollar_volume_usd`, `price_usd`, `perf_3y`, `perf_5y`, `ath`, `ath_date`, `ath_pct`, `atl_pct`, `fx_to_usd`, …), `server/src/routes/universe.ts`. Exports `listMarkets(): MarketInfo[]`, `marketCoverage(market): Record<column, fraction non-null>` for the screener.
+Market config in `server/src/universe/markets.ts` (code, name, country, currency, timezone, session hours, symbol-list filter, index codes, enabled). Enabled set from `EODVIEW_MARKETS` env / config, default decided by docs/MARKET-STUDY.md.
+
+### Q — Screener API v3
+Owns `server/src/screener/**`, `server/src/routes/screener.ts`: market param, per-market availability from coverage, Finviz URL codes, new filters/columns for the new metrics (All-Time High/Low, 3Y/5Y performance, Market, Currency, USD market cap / dollar volume).
+
+### A — Agent API
+Owns `server/src/agentapi/**`, `server/src/routes/agent.ts`, `server/src/routes/tokens.ts`, `docs/AGENT-API.md`, and may add dependencies to `server/package.json`. `/api/v1/*`, `/api/openapi.json`, `/mcp`, tokens. Lead wires `register(router)` of routes/agent.ts and routes/tokens.ts in index.ts (the integrator does it if missing).
+
+### U — Client
+Owns `client/src/screener/**` and `client/src/components/SettingsDialog.tsx` (API token management section).

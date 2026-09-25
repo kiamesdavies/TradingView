@@ -123,6 +123,7 @@ describe("query building", () => {
     const q = toQuery(s);
     expect(q).toEqual({
       filters: [{ id: "pe", value: "o10" }],
+      market: "US",
       universe: "stocks",
       tickers: "AAPL, MSFT",
       view: "overview",

@@ -2,7 +2,7 @@
 import { create } from "zustand";
 import type { ScreenerFilterValue, ScreenerMeta, ScreenerPreset, ScreenerResponse, UniverseStatus } from "@eodview/shared";
 import {
-  applyPreset, DEFAULT_STATE, pruneUnknownFilters, removeFilter, resetFilters, sanitizeState, setFilter, setPage, setPageSize,
+  applyPreset, DEFAULT_STATE, pruneUnknownFilters, removeFilter, resetFilters, sanitizeState, setFilter, setMarket, setPage, setPageSize,
   setTickers, setUniverse, setView, toggleSort, type FilterTab, type PageSize, type ScreenerState, type ScreenerUniverse, type SortDir,
 } from "./queryState";
 
@@ -19,6 +19,8 @@ function load(): ScreenerState {
 
 export interface ScreenerData {
   meta: ScreenerMeta | null;
+  /** v3: the market the loaded `meta` was requested for (filter availability is per market). */
+  metaMarket: string | null;
   metaError: string | null;
   presets: ScreenerPreset[];
   result: (ScreenerResponse & { offset: number }) | null;
@@ -33,6 +35,7 @@ interface Actions {
   removeFilter(id: string): void;
   reset(): void;
   setUniverse(u: ScreenerUniverse): void;
+  setMarket(m: string): void;
   setTickers(t: string): void;
   setView(v: string): void;
   toggleSort(column: string, firstDir?: SortDir): void;
@@ -53,6 +56,7 @@ export const useScreener = create<ScreenerStore>((set) => {
   return {
     q: typeof localStorage !== "undefined" ? load() : { ...DEFAULT_STATE },
     meta: null,
+    metaMarket: null,
     metaError: null,
     presets: [],
     result: null,
@@ -64,6 +68,7 @@ export const useScreener = create<ScreenerStore>((set) => {
     removeFilter: (id) => upd((q) => removeFilter(q, id)),
     reset: () => upd(resetFilters),
     setUniverse: (u) => upd((q) => setUniverse(q, u)),
+    setMarket: (m) => upd((q) => setMarket(q, m)),
     setTickers: (t) => upd((q) => setTickers(q, t)),
     setView: (v) => upd((q) => setView(q, v)),
     toggleSort: (c, d) => upd((q) => toggleSort(q, c, d)),

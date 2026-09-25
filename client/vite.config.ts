@@ -10,6 +10,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": `http://${api}`,
+      "/mcp": `http://${api}`,
       "/ws": { target: `ws://${api}`, ws: true },
     },
   },

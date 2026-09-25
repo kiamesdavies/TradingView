@@ -28,9 +28,9 @@ export type Row = Record<string, number | string | null>;
 
 export const TECH_COLUMNS = [
   "price", "prev_close", "open", "change_pct", "change_from_open_pct", "gap_pct", "volume", "avg_volume",
-  "rel_volume", "dollar_volume", "perf_1w", "perf_1m", "perf_3m", "perf_6m", "perf_ytd", "perf_1y",
+  "rel_volume", "dollar_volume", "perf_1w", "perf_2w", "perf_1m", "perf_3m", "perf_6m", "perf_ytd", "perf_1y",
   "sma20", "sma50", "sma200", "sma20_pct", "sma50_pct", "sma200_pct", "sma20_vs_sma50_pct", "sma50_vs_sma200_pct",
-  "sma20_cross", "sma50_cross", "sma200_cross", "sma50_200_cross", "rsi14", "atr14", "atr_pct",
+  "sma20_cross", "sma50_cross", "sma200_cross", "sma50_200_cross", "rsi14", "atr14", "atr_pct", "adr_pct", "rs_score",
   "volatility_1w", "volatility_1m", "high_20d_pct", "low_20d_pct", "high_50d_pct", "low_50d_pct",
   "high_52w_pct", "low_52w_pct", "new_high", "new_low", "candlestick", "price_date",
 ] as const;
@@ -193,10 +193,17 @@ export function computeTechnicals(bars: SymbolBars, opts: TechOptions = {}): Row
   // ---- performance
   const perf = (k: number) => (n > k ? pct(s.c[last]!, s.c[last - k]!) : null);
   out.perf_1w = perf(5);
+  out.perf_2w = perf(10);
   out.perf_1m = perf(21);
   out.perf_3m = perf(63);
   out.perf_6m = perf(126);
   out.perf_1y = perf(252);
+  // IBD-style relative strength input: the latest quarter weighs double.
+  const p9 = perf(189);
+  out.rs_score =
+    out.perf_3m !== null && out.perf_6m !== null && p9 !== null && out.perf_1y !== null
+      ? 0.4 * (out.perf_3m as number) + 0.2 * (out.perf_6m as number) + 0.2 * p9 + 0.2 * (out.perf_1y as number)
+      : null;
   const yearStart = `${s.date[last]!.slice(0, 4)}-01-01`;
   let ytdBase = -1;
   for (let i = last; i >= 0; i--) if (s.date[i]! < yearStart) { ytdBase = i; break; }
@@ -229,6 +236,11 @@ export function computeTechnicals(bars: SymbolBars, opts: TechOptions = {}): Row
     return sum / k;
   };
   out.volatility_1w = vol(5);
+  if (n >= 20) {
+    let sum = 0;
+    for (let i = n - 20; i < n; i++) sum += s.l[i]! > 0 ? s.h[i]! / s.l[i]! : 1;
+    out.adr_pct = (sum / 20 - 1) * 100;
+  }
   out.volatility_1m = vol(21);
 
   // ---- highs / lows

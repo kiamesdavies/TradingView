@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ScreenerColumnDef } from "@eodview/shared";
 import { tickerOf, type Row } from "./csv";
-import { cellTone, formatCell, formatValue } from "./format";
+import { cellTone, formatCell, formatValue, rowCurrency } from "./format";
 import { openOnChart } from "./hooks";
 import { loadSparklines, cachedSparkline } from "./screenerApi";
 import { Sparkline } from "./Sparkline";
@@ -52,13 +52,15 @@ function TickerPopup({ hover }: { hover: HoverState }) {
   );
 }
 
-export function ResultsTable({ columns, rows, offset, sort, onSort, loading }: {
+export function ResultsTable({ columns, rows, offset, sort, onSort, loading, currency }: {
   columns: ScreenerColumnDef[];
   rows: Row[];
   offset: number;
   sort: { column: string; dir: SortDir };
   onSort: (col: ScreenerColumnDef) => void;
   loading: boolean;
+  /** v3: non-US / all-markets screens show local money values with their currency code (row.currency, else `fallback`). */
+  currency?: { show: boolean; fallback: string | null } | null;
 }) {
   const [hover, setHover] = useState<HoverState | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -125,6 +127,7 @@ export function ResultsTable({ columns, rows, offset, sort, onSort, loading }: {
                 {ticker}
               </span>
             );
+            const ctx = currency?.show ? { currency: rowCurrency(r, currency.fallback) } : undefined;
             return (
               <tr key={symbol || i} className="scr-tr" onClick={() => { clearHover(); openOnChart(symbol); }}>
                 <td className="num muted scr-no">{offset + i + 1}</td>
@@ -133,7 +136,7 @@ export function ResultsTable({ columns, rows, offset, sort, onSort, loading }: {
                   if (c.id === "ticker") return <td key={c.id}>{tickerCell}</td>;
                   const v = r[c.id];
                   const tone = cellTone(v, c);
-                  const text = formatCell(v, c);
+                  const text = formatCell(v, c, ctx);
                   return (
                     <td key={c.id} className={`${c.align === "right" ? "num" : "scr-text"}${tone ? ` ${tone}` : ""}`} title={c.format === "text" && text.length > 24 ? text : undefined}>
                       {text}

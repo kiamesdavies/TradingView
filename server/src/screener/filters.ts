@@ -4,8 +4,9 @@
 // Filters that cannot be computed are listed with available:false and a reason.
 import type { ScreenerFilterDef, ScreenerGroup, ScreenerOption } from "@eodview/shared";
 import {
-  addDays, addMonths, addYears, monthEnd, monthStart, nyWallToUnix, weekStart,
+  addDays, addMonths, addYears, MARKET_TZ, monthEnd, monthStart, wallToUnix, weekStart,
 } from "./dates";
+import { indexBySlug, indexMember } from "./indexes";
 import { type CompileCtx, type Op, type Pred, type SqlParam } from "./sql";
 
 export type Build = (ctx: CompileCtx) => Pred;
@@ -23,6 +24,16 @@ export interface DynamicSource {
 
 export interface FilterSpec {
   id: string;
+  /** Finviz URL prefix (`${code}_${option}`); defaults to `id`. */
+  code?: string;
+  /** Finviz option code → our option value, where they differ (both are accepted). */
+  aliases?: Record<string, string>;
+  /** US-only concept: outside the US it is available only when the market's data coverage says so. */
+  usOnly?: boolean;
+  /** Columns whose non-null fraction decides per-market availability (default: custom col, else all read columns). */
+  coverageCols?: string[];
+  /** Options valid in queries but listed per market by the engine (market index membership). */
+  late?: (value: string) => Build | null;
   label: string;
   group: ScreenerGroup;
   appliesTo: ScreenerFilterDef["appliesTo"];
@@ -161,9 +172,12 @@ const descriptive: FilterSpec[] = [
   {
     id: "exch", label: "Exchange", group: "descriptive", appliesTo: "all", options: [], available: true,
     dynamic: { col: "exchange", label: (r) => EXCHANGE_LABELS[r.toUpperCase()] ?? r },
+    aliases: { nasd: "nasdaq" },
   },
   {
-    id: "idx", label: "Index", group: "descriptive", appliesTo: "stock", available: true,
+    id: "idx", label: "Index", group: "descriptive", appliesTo: "stock", available: true, usOnly: true,
+    coverageCols: ["in_sp500", "in_ndx", "in_dji"],
+    late: (v) => { const o = indexBySlug(v); return o ? indexMember(o.id) : null; },
     options: [
       opt("sp500", "S&P 500", cmp("in_sp500", "=", 1)),
       opt("ndx", "NASDAQ 100", cmp("in_ndx", "=", 1)),
@@ -173,6 +187,7 @@ const descriptive: FilterSpec[] = [
   {
     id: "sec", label: "Sector", group: "descriptive", appliesTo: "stock", options: [], available: true,
     dynamic: { col: "sector", label: (r) => SECTOR_LABELS[r] ?? r, kind: "stock" },
+    aliases: { financial: "financialservices" },
   },
   {
     id: "ind", label: "Industry", group: "descriptive", appliesTo: "all", available: true,
@@ -210,19 +225,19 @@ const descriptive: FilterSpec[] = [
     opt("smallunder", "-Small (under $2bln)", within("market_cap", 0, capMoney(2))),
     opt("microunder", "-Micro (under $300mln)", within("market_cap", 0, 300e6)),
   ], "market_cap", "money"),
-  numFilter("div", "Dividend Yield", "descriptive", [
+  { code: "fa_div", ...numFilter("div", "Dividend Yield", "descriptive", [
     opt("none", "None (0%)", (c) => ({ sql: `${c.col("dividend_yield")} IS NULL OR ${c.col("dividend_yield")} = 0`, params: [] })),
     opt("pos", "Positive (>0%)", cmp("dividend_yield", ">", 0)),
     opt("high", "High (>5%)", cmp("dividend_yield", ">", 5)),
     opt("veryhigh", "Very High (>10%)", cmp("dividend_yield", ">", 10)),
     ...overs("dividend_yield", steps(1, 10, 1), pct),
-  ], "dividend_yield", "pct", "all"),
-  numFilter("sh_short", "Float Short", "descriptive", [
+  ], "dividend_yield", "pct", "all"), coverageCols: ["dividend_yield", "payout_ratio", "fundamentals_at"] },
+  { usOnly: true, ...numFilter("sh_short", "Float Short", "descriptive", [
     opt("low", "Low (<5%)", cmp("short_float", "<", 5)),
     opt("high", "High (>20%)", cmp("short_float", ">", 20)),
     ...unders("short_float", [5, 10, 15, 20, 25, 30], pct),
     ...overs("short_float", [5, 10, 15, 20, 25, 30], pct),
-  ], "short_float", "pct"),
+  ], "short_float", "pct") },
   numFilter("an_recom", "Analyst Recom.", "descriptive", [
     opt("strongbuy", "Strong Buy (1)", within("analyst_recom", null, 1.5)),
     opt("buybetter", "Buy or better", within("analyst_recom", null, 2.5)),
@@ -258,6 +273,19 @@ const descriptive: FilterSpec[] = [
     ...([[1, 5], [1, 10], [1, 20], [5, 10], [5, 20], [5, 50], [10, 20], [10, 50], [20, 50], [50, 100]] as const)
       .map(([lo, hi]) => opt(`${lo}to${hi}`, `$${lo} to $${hi}`, within("price", lo, hi, true))),
   ], "price", "money", "all"),
+  // Not a Finviz filter: turnover in USD, the comparable liquidity measure across markets.
+  numFilter("sh_dollarvol", "Dollar Volume", "descriptive", [
+    opt("u1", "Under $1M", cmp("dollar_volume_usd", "<", 1e6)),
+    ...[1, 5, 10, 20, 50, 100].map((v) => opt(`o${v}`, `Over $${v}M`, cmp("dollar_volume_usd", ">", v * 1e6))),
+  ], "dollar_volume_usd", "money", "all"),
+  {
+    id: "market", label: "Market", group: "descriptive", appliesTo: "all", options: [], available: true,
+    dynamic: { col: "market" }, coverageCols: [],
+  },
+  {
+    id: "currency", label: "Currency", group: "descriptive", appliesTo: "all", options: [], available: true,
+    dynamic: { col: "currency", label: (r) => r.toUpperCase() },
+  },
   numFilter("targetprice", "Target Price", "descriptive", [
     ...[50, 40, 30, 20, 10, 5].map((v) => opt(`a${v}`, `${v}% Above Price`, cmp("target_upside_pct", ">=", v))),
     opt("above", "Above Price", cmp("target_upside_pct", ">", 0)),
@@ -438,28 +466,28 @@ const fundamental: FilterSpec[] = [
     opt("veryhigh", "Very High (>50%)", cmp("insider_own", ">", 50)),
     ...overs("insider_own", steps(10, 90, 10), pct),
   ], "insider_own", "pct"),
-  numFilter("sh_insidertrans", "Insider Transactions", "fundamental", [
+  { usOnly: true, ...numFilter("sh_insidertrans", "Insider Transactions", "fundamental", [
     opt("veryneg", "Very Negative (<20%)", cmp("insider_trans", "<", -20)),
     opt("neg", "Negative (<0%)", cmp("insider_trans", "<", 0)),
     opt("pos", "Positive (>0%)", cmp("insider_trans", ">", 0)),
     opt("verypos", "Very Positive (>20%)", cmp("insider_trans", ">", 20)),
     ...[-90, -80, -70, -60, -50, -45, -40, -35, -30, -25, -20, -15, -10, -5].map((v) => opt(`u${v}`, `Under ${v}%`, cmp("insider_trans", "<", v))),
     ...[5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90].map((v) => opt(`o${v}`, `Over +${v}%`, cmp("insider_trans", ">", v))),
-  ], "insider_trans", "pct"),
+  ], "insider_trans", "pct") },
   numFilter("sh_instown", "Institutional Ownership", "fundamental", [
     opt("low", "Low (<5%)", cmp("inst_own", "<", 5)),
     opt("high", "High (>90%)", cmp("inst_own", ">", 90)),
     ...unders("inst_own", steps(10, 90, 10).reverse(), pct),
     ...overs("inst_own", steps(10, 90, 10), pct),
   ], "inst_own", "pct"),
-  numFilter("sh_insttrans", "Institutional Transactions", "fundamental", [
+  { usOnly: true, ...numFilter("sh_insttrans", "Institutional Transactions", "fundamental", [
     opt("veryneg", "Very Negative (<20%)", cmp("inst_trans", "<", -20)),
     opt("neg", "Negative (<0%)", cmp("inst_trans", "<", 0)),
     opt("pos", "Positive (>0%)", cmp("inst_trans", ">", 0)),
     opt("verypos", "Very Positive (>20%)", cmp("inst_trans", ">", 20)),
     ...[-50, -45, -40, -35, -30, -25, -20, -15, -10, -5].map((v) => opt(`u${v}`, `Under ${v}%`, cmp("inst_trans", "<", v))),
     ...[5, 10, 15, 20, 25, 30, 35, 40, 45, 50].map((v) => opt(`o${v}`, `Over +${v}%`, cmp("inst_trans", ">", v))),
-  ], "inst_trans", "pct"),
+  ], "inst_trans", "pct") },
 ];
 
 // ---------------------------------------------------------------- technical
@@ -483,6 +511,29 @@ function perfOptions(): OptionSpec[] {
     ...win("26w", "Half", "perf_6m", [-75, -50, -30, -20, -10], [10, 20, 30, 50, 100]),
     ...win("52w", "Year", "perf_1y", [-75, -50, -30, -20, -10], [10, 20, 30, 50, 100, 200, 300, 500]),
     ...win("ytd", "YTD", "perf_ytd", [-75, -50, -30, -20, -10, -5], [5, 10, 20, 30, 50, 100]),
+    ...win("3y", "3 Years", "perf_3y", [-90, -75, -50, -25], [25, 50, 100, 200, 300, 500, 1000]),
+    ...win("5y", "5 Years", "perf_5y", [-90, -75, -50, -25], [25, 50, 100, 200, 300, 500, 1000]),
+  ];
+}
+
+/** Finviz writes signed performance steps as `<window><abs>o` (+) / `<window><abs>u` (−): "13w20o", "d15u", "52w500o". */
+function perfAliases(options: OptionSpec[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const { value } of options) {
+    const m = /^(d|1w|4w|13w|26w|52w|ytd|3y|5y)(-?)(\d+)$/.exec(value);
+    if (m) out[`${m[1]}${m[3]}${m[2] ? "u" : "o"}`] = value;
+  }
+  return out;
+}
+
+function allTimeOptions(): OptionSpec[] {
+  return [
+    opt("nh", "New High", (c) => ({ sql: `${c.col("ath_date")} = ${c.col("price_date")} OR ${c.col("ath_pct")} >= ?`, params: [0] })),
+    opt("nl", "New Low", cmp("atl_pct", "<=", 0)),
+    ...[3, 5, 10].map((v) => opt(`b0to${v}h`, `0-${v}% below High`, within("ath_pct", -v, 0, true))),
+    ...[5, 10, 15, 20, 30, 40, 50, 60, 70, 80, 90].map((v) => opt(`b${v}h`, `${v}% or more below High`, cmp("ath_pct", "<=", -v))),
+    ...[3, 5, 10].map((v) => opt(`a0to${v}l`, `0-${v}% above Low`, within("atl_pct", 0, v, true))),
+    ...[5, 10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100, 120, 150, 200, 300, 500].map((v) => opt(`a${v}l`, `${v}% or more above Low`, cmp("atl_pct", ">=", v))),
   ];
 }
 
@@ -553,8 +604,8 @@ function signedSteps(col: string, name: [string, string], vals: number[]): Optio
 }
 
 const technical: FilterSpec[] = [
-  { id: "ta_perf", label: "Performance", group: "technical", appliesTo: "all", available: true, options: perfOptions() },
-  { id: "ta_perf2", label: "Performance 2", group: "technical", appliesTo: "all", available: true, options: perfOptions() },
+  { id: "ta_perf", label: "Performance", group: "technical", appliesTo: "all", available: true, options: perfOptions(), aliases: perfAliases(perfOptions()), coverageCols: ["change_pct", "perf_1w", "perf_1m", "perf_3m"] },
+  { id: "ta_perf2", label: "Performance 2", group: "technical", appliesTo: "all", available: true, options: perfOptions(), aliases: perfAliases(perfOptions()), coverageCols: ["change_pct", "perf_1w", "perf_1m", "perf_3m"] },
   optFilter("ta_volatility", "Volatility", "technical", [
     ...[3, 4, 5, 6, 7, 8, 9, 10, 12, 15].map((v) => opt(`wo${v}`, `Week - Over ${v}%`, cmp("volatility_1w", ">", v))),
     ...[2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15].map((v) => opt(`mo${v}`, `Month - Over ${v}%`, cmp("volatility_1m", ">", v))),
@@ -576,7 +627,7 @@ const technical: FilterSpec[] = [
   numFilter("ta_highlow52w", "52-Week High/Low", "technical", highLowOptions("52w",
     [5, 10, 15, 20, 30, 40, 50, 60, 70, 80, 90],
     [5, 10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100, 120, 150, 200, 300, 500]), "high_52w_pct", "pct", "all"),
-  unavailable("ta_alltime", "All-Time High/Low", "technical", "Only a 52-week range is computed from stored history", "all"),
+  { ...numFilter("ta_alltime", "All-Time High/Low", "technical", allTimeOptions(), "ath_pct", "pct", "all"), coverageCols: ["ath_pct", "atl_pct"] },
   unavailable("ta_pattern", "Pattern", "technical", "Chart pattern recognition (channels, wedges, triangles) is not implemented", "all"),
   {
     id: "ta_candlestick", label: "Candlestick", group: "technical", appliesTo: "all", available: true,
@@ -585,6 +636,9 @@ const technical: FilterSpec[] = [
       ["hanging_man", "Hanging Man"], ["bullish_engulfing", "Bullish Engulfing"], ["bearish_engulfing", "Bearish Engulfing"],
       ["marubozu_white", "Marubozu White"], ["marubozu_black", "Marubozu Black"], ["spinning_top", "Spinning Top"],
     ] as const).map(([v, l]) => opt(v.replace(/_/g, ""), l, cmp("candlestick", "=", v))),
+    // Finviz's short codes; the pattern is sparse by nature, so availability follows price coverage.
+    aliases: { d: "doji", h: "hammer", ih: "invertedhammer", mw: "marubozuwhite", mb: "marubozublack" },
+    coverageCols: ["price"],
   },
   numFilter("ta_beta", "Beta", "technical", [
     ...unders("beta", [0, 0.5, 1, 1.5, 2]),
@@ -605,17 +659,23 @@ function newsOptions(): OptionSpec[] {
   const range = (from: (c: CompileCtx) => number, to: (c: CompileCtx) => number): Build => (c) => ({
     sql: `${c.col("latest_news_at")} >= ? AND ${c.col("latest_news_at")} < ?`, params: [from(c), to(c)],
   });
-  const at = (off: number, h = 0, m = 0) => (c: CompileCtx) => nyWallToUnix(addDays(c.today, off), h, m);
+  // Day boundaries in the market's zone (ctx.tz); "after market close" = that market's close (ctx.close).
+  const midnight = (c: CompileCtx, date: string) => wallToUnix(date, 0, 0, c.tz ?? MARKET_TZ);
+  const at = (off: number) => (c: CompileCtx) => midnight(c, addDays(c.today, off));
+  const afterClose = (off: number) => (c: CompileCtx) => {
+    const cl = c.close ?? { hour: 16, minute: 0, tz: MARKET_TZ };
+    return wallToUnix(addDays(c.today, off), cl.hour, cl.minute, cl.tz);
+  };
   return [
     opt("today", "Today", since(at(0))),
-    opt("todayafter", "Today After Market Close", since(at(0, 16))),
+    opt("todayafter", "Today After Market Close", since(afterClose(0))),
     opt("sinceyesterday", "Since Yesterday", since(at(-1))),
-    opt("sinceyesterdayafter", "Since Yesterday After Market Close", since(at(-1, 16))),
+    opt("sinceyesterdayafter", "Since Yesterday After Market Close", since(afterClose(-1))),
     opt("yesterday", "Yesterday", range(at(-1), at(0))),
-    opt("yesterdayafter", "Yesterday After Market Close", range(at(-1, 16), at(0))),
+    opt("yesterdayafter", "Yesterday After Market Close", range(afterClose(-1), at(0))),
     opt("prevdays5", "In the last 5 days", since(at(-5))),
-    opt("thisweek", "This Week", since((c) => nyWallToUnix(weekStart(c.today)))),
-    opt("thismonth", "This Month", since((c) => nyWallToUnix(monthStart(c.today)))),
+    opt("thisweek", "This Week", since((c) => midnight(c, weekStart(c.today)))),
+    opt("thismonth", "This Month", since((c) => midnight(c, monthStart(c.today)))),
   ];
 }
 
@@ -686,10 +746,22 @@ const etf: FilterSpec[] = [
 ];
 
 export const FILTERS: FilterSpec[] = [...descriptive, ...fundamental, ...technical, ...news, ...etf];
-const BY_ID = new Map(FILTERS.map((f) => [f.id, f]));
+const BY_ID = new Map<string, FilterSpec>(FILTERS.map((f) => [f.id, f]));
+// Finviz URL codes resolve too ("fa_div" → "div"); ids win on a clash.
+for (const f of FILTERS) if (f.code && !BY_ID.has(f.code)) BY_ID.set(f.code, f);
 
+/** By id or Finviz URL code. */
 export function getFilter(id: string): FilterSpec | undefined {
   return BY_ID.get(id);
+}
+
+export function filterCode(f: FilterSpec): string {
+  return f.code ?? f.id;
+}
+
+/** Our option value for a Finviz alias (identity otherwise). */
+export function canonicalOption(f: FilterSpec, value: string): string {
+  return f.aliases && Object.hasOwn(f.aliases, value) ? f.aliases[value]! : value;
 }
 
 /** Every metric column the registry reads (for tests / diagnostics). */

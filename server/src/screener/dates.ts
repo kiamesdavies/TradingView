@@ -67,6 +67,40 @@ export function monthEnd(date: string): string {
   return addDays(addMonths(monthStart(date), 1), -1);
 }
 
+const fmtCache = new Map<string, { date: Intl.DateTimeFormat; parts: Intl.DateTimeFormat }>();
+function fmts(tz: string) {
+  let f = fmtCache.get(tz);
+  if (!f) {
+    f = {
+      date: new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }),
+      parts: new Intl.DateTimeFormat("en-US", {
+        timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+      }),
+    };
+    fmtCache.set(tz, f);
+  }
+  return f;
+}
+
+/** Today's calendar date in the IANA zone `tz` ("UTC" allowed). */
+export function todayIn(now: Date, tz: string): string {
+  return tz === MARKET_TZ ? nyToday(now) : fmts(tz).date.format(now);
+}
+
+/** Unix seconds of a wall-clock time on `date` in the IANA zone `tz` (DST-safe). */
+export function wallToUnix(date: string, hour: number, minute: number, tz: string): number {
+  if (tz === MARKET_TZ) return nyWallToUnix(date, hour, minute);
+  const [y, mo, d] = date.split("-").map(Number) as [number, number, number];
+  const guess = Date.UTC(y, mo - 1, d, hour, minute);
+  let ts = guess;
+  for (let i = 0; i < 2; i++) {
+    const p = Object.fromEntries(fmts(tz).parts.formatToParts(new Date(ts)).map((x) => [x.type, x.value]));
+    const wall = Date.UTC(+p.year!, +p.month! - 1, +p.day!, +p.hour! % 24, +p.minute!, +p.second!);
+    ts += guess - wall;
+  }
+  return Math.floor(ts / 1000);
+}
+
 /** Unix seconds of a New York wall-clock time on `date`. */
 export function nyWallToUnix(date: string, hour = 0, minute = 0): number {
   const [y, mo, d] = date.split("-").map(Number) as [number, number, number];

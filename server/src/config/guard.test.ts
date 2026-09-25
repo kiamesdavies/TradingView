@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assertConfigAccess } from "./guard";
+import { assertConfigAccess, isProxied, PROXY_HEADERS } from "./guard";
 
 const ok = (g: Parameters<typeof assertConfigAccess>[0]) => { assertConfigAccess(g); return true; };
 
@@ -25,5 +25,15 @@ describe("config route guard", () => {
     } catch (e) {
       expect((e as { status: number }).status).toBe(401);
     }
+  });
+
+  test("a request relayed by a proxy is never loopback (same-host nginx rewrites Host to 127.0.0.1:3001)", () => {
+    const g = { adminToken: undefined, authorization: null, ip: "127.0.0.1", host: "127.0.0.1:3001" };
+    expect(ok(g)).toBe(true);
+    expect(() => assertConfigAccess({ ...g, proxied: true })).toThrow();
+    for (const h of PROXY_HEADERS) expect(isProxied(new Headers({ [h]: "203.0.113.9" }))).toBe(true);
+    expect(isProxied(new Headers({ host: "localhost:3001", origin: "http://localhost:5173" }))).toBe(false);
+    // the admin token still works through a proxy
+    expect(ok({ ...g, adminToken: "s3cret", authorization: "Bearer s3cret", proxied: true })).toBe(true);
   });
 });

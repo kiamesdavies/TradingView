@@ -1,7 +1,11 @@
 // Contract between the universe pipeline (writer) and the screener (reader).
 // One row per tracked symbol in table `universe_metrics`. The pipeline creates the table from this list
 // (adding missing columns on startup) and fills every column it can; unknown values stay NULL.
-// Units: *_pct columns are percentages (5.2 = +5.2%), money in the listing currency, dates "YYYY-MM-DD".
+// Units: *_pct columns are percentages (5.2 = +5.2%), dates "YYYY-MM-DD". Prices (price, open, sma*, ath, atl,
+// target_price…) are in the symbol's quote currency (`currency`, which may be a minor unit such as GBX = pence);
+// market_cap and per-share fundamentals are in the MAJOR unit (GBP for GBX); *_usd columns convert with
+// fx_to_usd (USD per 1 unit of `currency`) from the daily FX job.
+// v3 (pipeline owner): multi-market columns (market, indices, *_usd, fx_to_usd) and full-history metrics.
 
 export type MetricType = "TEXT" | "REAL" | "INTEGER";
 export interface MetricColumn { col: string; type: MetricType; desc: string }
@@ -12,16 +16,19 @@ export const METRIC_COLUMNS: MetricColumn[] = [
   { col: "code", type: "TEXT", desc: "AAPL" },
   { col: "name", type: "TEXT", desc: "company / fund name" },
   { col: "kind", type: "TEXT", desc: "'stock' | 'etf'" },
-  { col: "exchange", type: "TEXT", desc: "NYSE | NASDAQ | AMEX | NYSE ARCA | BATS" },
+  { col: "market", type: "TEXT", desc: "EODHD exchange code of the listing (US, ST, LSE, TO, ...; see universe/markets.ts)" },
+  { col: "exchange", type: "TEXT", desc: "US: NYSE | NASDAQ | AMEX | NYSE ARCA | BATS; elsewhere the market code" },
   { col: "sector", type: "TEXT", desc: "EODHD General.Sector" },
   { col: "industry", type: "TEXT", desc: "EODHD General.Industry" },
   { col: "country", type: "TEXT", desc: "Issuer country: AddressData country when outside the US (ADRs), else General.CountryName" },
-  { col: "currency", type: "TEXT", desc: "" },
+  { col: "currency", type: "TEXT", desc: "quote currency of the prices (symbol list Currency, e.g. USD, SEK, GBX)" },
   { col: "ipo_date", type: "TEXT", desc: "General.IPODate" },
   { col: "in_sp500", type: "INTEGER", desc: "0/1 GSPC.INDX component" },
   { col: "in_ndx", type: "INTEGER", desc: "0/1 NDX.INDX component" },
   { col: "in_dji", type: "INTEGER", desc: "0/1 DJI.INDX component" },
-  { col: "market_cap", type: "REAL", desc: "latest close * shares outstanding (fallback Highlights.MarketCapitalization)" },
+  { col: "indices", type: "TEXT", desc: "index memberships as comma-wrapped ids, e.g. ',SP500,NDX,' or ',OMXS30,OMXSPI,' (match with LIKE '%,ID,%')" },
+  { col: "market_cap", type: "REAL", desc: "latest close * shares outstanding (fallback Highlights.MarketCapitalization), major currency unit" },
+  { col: "market_cap_usd", type: "REAL", desc: "market_cap in USD" },
   { col: "shares_outstanding", type: "REAL", desc: "" },
   { col: "shares_float", type: "REAL", desc: "" },
   { col: "employees", type: "INTEGER", desc: "" },
@@ -36,15 +43,33 @@ export const METRIC_COLUMNS: MetricColumn[] = [
   { col: "volume", type: "REAL", desc: "last session volume" },
   { col: "avg_volume", type: "REAL", desc: "63-session average volume (3M)" },
   { col: "rel_volume", type: "REAL", desc: "volume / avg_volume" },
-  { col: "dollar_volume", type: "REAL", desc: "price * avg_volume" },
+  { col: "dollar_volume", type: "REAL", desc: "price * avg_volume (quote currency)" },
+  { col: "dollar_volume_usd", type: "REAL", desc: "dollar_volume in USD (compare liquidity across markets)" },
+  { col: "fx_to_usd", type: "REAL", desc: "USD per 1 unit of `currency` (GBX: GBPUSD/100); 1 for USD" },
+  { col: "price_usd", type: "REAL", desc: "price in USD" },
 
   // ---- performance (adjusted)
   { col: "perf_1w", type: "REAL", desc: "5 sessions" },
+  { col: "perf_2w", type: "REAL", desc: "10 sessions" },
   { col: "perf_1m", type: "REAL", desc: "21 sessions" },
   { col: "perf_3m", type: "REAL", desc: "63 sessions" },
   { col: "perf_6m", type: "REAL", desc: "126 sessions" },
   { col: "perf_ytd", type: "REAL", desc: "vs last close of previous year" },
   { col: "perf_1y", type: "REAL", desc: "252 sessions" },
+  { col: "perf_3y", type: "REAL", desc: "vs the last close on/before the same date 3 years earlier (needs EODVIEW_HISTORY_YEARS >= 3)" },
+  { col: "perf_5y", type: "REAL", desc: "same, 5 years (needs EODVIEW_HISTORY_YEARS >= 5)" },
+  { col: "perf_3m_rank_pct", type: "REAL", desc: "percentile 0..100 of perf_3m within the same market and kind" },
+  { col: "rs_score", type: "REAL", desc: "IBD-style weighted return %: 0.4*perf_3m + 0.2*(6m) + 0.2*(9m) + 0.2*(12m)" },
+  { col: "rs_rank", type: "INTEGER", desc: "relative strength rating 1..99: percentile of rs_score within the same market and kind" },
+
+  // ---- full history (per-ticker backfill; split/dividend-adjusted basis, like the chart's ADJ view)
+  { col: "ath", type: "REAL", desc: "all-time high (adjusted, quote currency)" },
+  { col: "ath_date", type: "TEXT", desc: "" },
+  { col: "ath_pct", type: "REAL", desc: "price vs all-time high % (<= 0)" },
+  { col: "atl", type: "REAL", desc: "all-time low (adjusted)" },
+  { col: "atl_date", type: "TEXT", desc: "" },
+  { col: "atl_pct", type: "REAL", desc: "price vs all-time low % (>= 0)" },
+  { col: "first_trade_date", type: "TEXT", desc: "first date in EODHD's full history (listing date proxy)" },
 
   // ---- technical
   { col: "sma20", type: "REAL", desc: "" },
@@ -62,6 +87,7 @@ export const METRIC_COLUMNS: MetricColumn[] = [
   { col: "rsi14", type: "REAL", desc: "Wilder RSI(14)" },
   { col: "atr14", type: "REAL", desc: "Wilder ATR(14)" },
   { col: "atr_pct", type: "REAL", desc: "atr14 / price %" },
+  { col: "adr_pct", type: "REAL", desc: "average daily range % over 20 sessions: mean(high/low) - 1" },
   { col: "volatility_1w", type: "REAL", desc: "avg (high-low)/close % over 5 sessions" },
   { col: "volatility_1m", type: "REAL", desc: "avg (high-low)/close % over 21 sessions" },
   { col: "high_20d_pct", type: "REAL", desc: "price vs 20-session high % (<=0)" },
@@ -143,6 +169,7 @@ export const METRIC_COLUMNS: MetricColumn[] = [
   // ---- bookkeeping
   { col: "price_date", type: "TEXT", desc: "date of `price`" },
   { col: "fundamentals_at", type: "INTEGER", desc: "unix seconds fundamentals were fetched" },
+  { col: "history_at", type: "INTEGER", desc: "unix seconds the full history (ath/atl) was fetched" },
   { col: "updated_at", type: "INTEGER", desc: "unix seconds this row was recomputed" },
 ];
 

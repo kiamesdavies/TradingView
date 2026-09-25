@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { HttpError } from "../http";
-import { METRIC_COLUMNS, METRIC_COLUMN_SET, METRICS_TABLE } from "../universe/metricsSchema";
+import { METRIC_COLUMNS, METRICS_TABLE } from "../universe/metricsSchema";
 import { COLUMNS, VIEWS } from "./columns";
 import { addDays, nyToday, nyWallToUnix, weekStart } from "./dates";
 import { FILTERS, getFilter } from "./filters";
 import { createPresetStore, DEFAULT_PRESETS } from "./presets";
 import { buildQuery, compileFilter, createScreenerEngine, normalizeQuery } from "./query";
 import { parseSparklineParams } from "./sparklines";
-import { makeColResolver, type CompileCtx } from "./sql";
+import { makeColResolver, SCREENER_COLUMN_SET, type CompileCtx } from "./sql";
 
 // Thursday 2026-09-24, 10:00 New York
 const NOW = new Date("2026-09-24T14:00:00Z");
@@ -71,15 +71,15 @@ describe("registry", () => {
         const p = o.build(ctx);
         expect((p.sql.match(/\?/g) ?? []).length).toBe(p.params.length);
       }
-      if (f.custom) expect(METRIC_COLUMN_SET.has(f.custom.col)).toBe(true);
-      if (f.dynamic) expect(METRIC_COLUMN_SET.has(f.dynamic.col)).toBe(true);
+      if (f.custom) expect(SCREENER_COLUMN_SET.has(f.custom.col)).toBe(true);
+      if (f.dynamic) expect(SCREENER_COLUMN_SET.has(f.dynamic.col)).toBe(true);
       if (!f.available) expect(f.unavailableReason).toBeTruthy();
     }
   });
   test("views reference known columns; columns reference metric columns", () => {
     const ids = new Set(COLUMNS.map((c) => c.id));
     for (const v of VIEWS) for (const c of v.columns) expect(ids.has(c)).toBe(true);
-    for (const c of COLUMNS) for (const col of c.cols) expect(METRIC_COLUMN_SET.has(col)).toBe(true);
+    for (const c of COLUMNS) for (const col of c.cols) expect(SCREENER_COLUMN_SET.has(col)).toBe(true);
     expect(VIEWS.map((v) => v.id)).toEqual(["overview", "valuation", "financial", "ownership", "performance", "technical", "etf", "charts"]);
   });
   test("finviz vocabulary samples", () => {

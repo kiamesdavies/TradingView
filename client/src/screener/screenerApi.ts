@@ -7,7 +7,8 @@ import { api, ApiRequestError } from "../api/http";
 export const SPARK_DAYS = 60;
 
 export const screenerApi = {
-  meta: () => api.get<ScreenerMeta>("/screener/meta"),
+  /** v3: `market` marks each filter's availability from that market's data coverage. */
+  meta: (market?: string) => api.get<ScreenerMeta>(`/screener/meta${market ? `?market=${encodeURIComponent(market)}` : ""}`),
   query: (q: ScreenerQuery) => api.post<ScreenerResponse>("/screener/query", q),
   presets: () => api.get<ScreenerPreset[]>("/screener/presets"),
   createPreset: (name: string, query: ScreenerPreset["query"]) => api.post<ScreenerPreset>("/screener/presets", { name, query }),

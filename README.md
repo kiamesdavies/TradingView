@@ -68,9 +68,13 @@ Ways to set it:
 
 `config.json` is written with mode 0600. `server/data/` is in `.gitignore`.
 
-**Who can use the config endpoints.** `GET/PUT /api/config` only answer loopback callers whose
-`Host` header is also a loopback name. If you set `EODVIEW_ADMIN_TOKEN`, they instead require
-`Authorization: Bearer <token>`; the Settings dialog then shows a field for the token.
+**Who can use the config endpoints.** `GET/PUT /api/config` (and the other admin endpoints: API tokens, universe
+jobs and markets) only answer loopback callers whose `Host` header is also a loopback name and that carry no proxy
+header (`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP`, `Via`). If you set `EODVIEW_ADMIN_TOKEN`,
+they instead require `Authorization: Bearer <token>`; the Settings dialog then shows a field for the token.
+Behind a reverse proxy on the same machine, set `EODVIEW_ADMIN_TOKEN`: nginx forwards requests from `127.0.0.1` with
+`Host: 127.0.0.1:3001` and no proxy header by default, which would otherwise look local (see
+[docs/AGENT-API.md](docs/AGENT-API.md#authentication-and-tokens)).
 
 **Cross-site protection.** `/ws` upgrades and every POST/PUT/DELETE under `/api` are refused (403) when the
 browser's `Origin` is not the server's own origin, a loopback origin (such as the Vite dev server on :5173) or listed
@@ -80,25 +84,32 @@ Clients that send no `Origin` (curl, scripts) are not affected.
 ## Screener data pipeline
 
 The screener does not query EODHD per request. A background job loop in the server (`server/src/universe/`)
-keeps a table with one row of metrics per US stock and ETF (about 11,000 symbols) in the SQLite database:
+keeps a table with one row of metrics per stock/ETF in every enabled market, in the SQLite database.
+
+**Markets.** Default: `US, AU, TW, OL, XETRA, ST` — the tier-1 momentum markets from
+[docs/MARKET-STUDY.md](docs/MARKET-STUDY.md) plus Stockholm. Override with `EODVIEW_MARKETS=US,ST,TO` (any code in
+`server/src/universe/markets.ts`: US, TO, V, LSE, XETRA, PA, AS, ST, OL, CO, HE, SW, MC, AU, KO, KQ, TW, TWO, HK).
+Each market runs on its own time zone and close time; prices are converted to USD (`*_usd` columns, London pence
+handled) so size and liquidity filters compare across markets. Filters are greyed out per market when less than 15% of
+that market's symbols have the data (e.g. short float, insider and institutional data are US-only).
 
 | Job | What it does | Cost (API credits) |
 |---|---|---|
-| `symbols` | US stock and ETF list (weekly) | ~1 |
-| `prices` | Latest session for every symbol from the bulk EOD file, plus that day's splits and dividends; re-downloads the history of symbols that split or paid a dividend | ~300 per session + 1 per re-download |
-| `backfill` | One bulk file per missing past session until `EODVIEW_HISTORY_DAYS` sessions are stored | 100 per session |
+| `symbols:<M>` | Stock/ETF list per market (weekly) | ~1 each |
+| `prices:<M>` | Latest session for every symbol from the market's bulk EOD file, ~2.5 h after its close; plus splits/dividends and re-downloads of affected histories | 100 per market-session (+200 for US splits/dividends) + 1 per re-download |
+| `backfill:<M>` | Full history once per symbol via `/eod/<symbol>` (1 credit however long): all-time high/low from the full history, the last `EODVIEW_HISTORY_YEARS` years stored. Markets not in `EODVIEW_ACTIONS_BULK_MARKETS` re-fetch every history once per 60 days, spread evenly over the days, so splits and dividends the daily check cannot see get restated | 1 per symbol (+ 1/60 of the market per day) |
+| `fx` | Currency → USD rates for enabled markets (daily) | 1 per currency |
 | `earnings` | Earnings calendar (daily) | ~1 |
-| `indices` | S&P 500, Nasdaq-100 and Dow membership (weekly) | ~30 |
-| `news` | Latest news across all tickers, for the News filter (every 2 hours) | 5 per 250 articles, up to 40 per run |
-| `fundamentals` | Per-symbol fundamentals, most-traded symbols first, refreshed on a rolling basis | 10 per symbol |
-| `metrics` | Recomputes the metrics table (technicals, performance, valuation…) | none |
+| `indices:<M>` | Index membership (S&P 500, Nasdaq-100, Dow, OMXS30, …; weekly) | 10 per index |
+| `news` | Latest news across all tickers, for the News filter (every 2 hours) | 5 per 250 articles |
+| `fundamentals` | Per-symbol fundamentals, highest USD dollar volume first across markets, rolling refresh; at most `EODVIEW_FUNDAMENTALS_MAX_PER_RUN` per run, then a 1 h pause. A symbol that fails (5xx, timeout, plan limit) backs off on its own (1 h, doubling, up to 7 days); only key, rate-limit or connectivity errors stop the job | 10 per symbol |
+| `metrics` | Recomputes the metrics table (technicals, performance, ATH, valuation, USD columns…) | none |
 
-**First run.** With the defaults (`EODVIEW_HISTORY_DAYS=300`) the first build takes roughly
-300 × 100 = 30,000 credits for price history and 10 credits per symbol for fundamentals, so on a 100,000/day plan it
-spreads over about two days: prices and technicals are ready within the first hour (the backfill fetches about one
-session every 3 s), fundamentals fill in gradually (about 10 symbols per second while the daily budget lasts). The
-screener works throughout; filters whose data has not been collected yet are shown as unavailable. After that the
-daily upkeep is a few thousand credits.
+**First run.** Symbols, latest prices, earnings dates and index membership are ready within minutes. The per-ticker
+backfill is ~1 credit per symbol (US ≈ 11.4k, all six default markets ≈ 17k) and runs at ≤ 800 requests/min, so
+about 20–30 minutes. Fundamentals are the expensive part (10 credits × ~10k stocks): they fill in over 2–3 days
+within the daily budget. The screener works throughout; filters without enough data yet are shown as unavailable.
+Steady-state upkeep is roughly 10–15k credits a day.
 
 **Credit budget.** Before every paid request the pipeline checks two limits and pauses until 00:00 UTC when either
 is reached ("budget exhausted, resumes …" in the job status):
@@ -107,9 +118,33 @@ is reached ("budget exhausted, resumes …" in the job status):
 - the account's total usage (EODHD `/api/user`, checked at most every 5 minutes) must stay below the plan's daily
   limit minus `EODVIEW_CREDIT_RESERVE` (default 15,000), leaving room for charts and your other tools.
 
+The background jobs `backfill` and `fundamentals` stop another `EODVIEW_JOB_CREDIT_RESERVE` credits (default 3,000)
+short of both limits, so the daily prices, splits/dividends and FX jobs always have room. Agent API calls to EODHD are
+recorded in the same ledger (see the Agent API section).
+
+A bulk session with clearly fewer rows than the previous one is re-downloaded hourly, at most 3 times, then accepted.
+Markets without the bulk splits/dividends feed detect splits from the day's price change against the market's median
+move: moves beyond −45%/+80%, or close to a 5:4, 4:3 or 3:2 ratio (or the reverse), trigger a history re-download.
+
 Set `EODVIEW_UNIVERSE=off` to disable the loop (the screener then shows whatever is already stored; jobs can still be
 started by hand). Job status: `GET /api/universe/status`; run one job now: `POST /api/universe/jobs/<name>/run`
 (localhost only, like `/api/config`).
+
+## Agent API (REST + MCP)
+
+Other agents can use the screener and market data — see **[docs/AGENT-API.md](docs/AGENT-API.md)**.
+
+```bash
+# Finviz-style filter codes, any enabled market, sorted by 3-month performance
+curl "http://localhost:3001/api/v1/screen?f=cap_smallover,ta_sma50_pa,ta_perf_13wup&market=ST&o=-perf_3m&limit=20"
+
+# Claude Code: add EODView as an MCP server (tools: screen, list_filters, list_markets, symbol_overview, get_bars, …)
+claude mcp add --transport http eodview http://localhost:3001/mcp
+```
+
+Callers on this machine need no token; others send `Authorization: Bearer <token>` (create read-only tokens in
+Settings → API access, or set `EODVIEW_API_TOKENS`). OpenAPI spec: `GET /api/openapi.json`. The screener's
+"Copy as API" / "Copy MCP call" buttons turn the current screen into a call.
 
 ## New API endpoints (v2)
 
@@ -140,10 +175,21 @@ started by hand). Job status: `GET /api/universe/status`; run one job now: `POST
 | `EODVIEW_INTRADAY_HISTORY_TTL` | `21600` | Cache time in seconds for older intraday windows |
 | `EODVIEW_QUOTE_TTL` | `10` | Cache time in seconds for `/api/quotes` |
 | `EODVIEW_UNIVERSE` | on | `off` disables the screener's background pipeline |
-| `EODVIEW_HISTORY_DAYS` | `300` | Sessions of daily history the pipeline keeps for every symbol (SMA200 and 52-week metrics need about 260) |
+| `EODVIEW_MARKETS` | `US,AU,TW,OL,XETRA,ST` | Markets the screener pipeline tracks |
+| `EODVIEW_HISTORY_YEARS` | `5` | Years of daily history stored per symbol (3Y/5Y performance need ≥ 3/5) |
+| `EODVIEW_BACKFILL_MAX_SYMBOLS` | none | Testing: cap backfilled symbols per market |
+| `EODVIEW_FUNDAMENTALS_MAX_PER_RUN` | `500` | Fundamentals fetched per run before a 1 h pause |
+| `EODVIEW_RATE_PER_MIN` / `EODVIEW_CONCURRENCY` | `800` / `8` | Request rate and parallelism of the per-ticker backfill |
+| `EODVIEW_ACTIONS_BULK_MARKETS` | `US` | Markets whose splits/dividends come from EODHD's bulk lists |
+| `EODVIEW_API_TOKENS` | none | Comma-separated bearer tokens for the agent API (in addition to tokens created in Settings) |
+| `EODVIEW_API_REQUIRE_TOKEN` | unset | Set to `1` to require a token even for callers on this machine |
+| `EODVIEW_API_RATE_LIMIT` | `120` | Agent API requests per minute per token |
+| `EODVIEW_API_LOOPBACK_RATE_LIMIT` | `600` | Agent API requests per minute from this machine (all loopback callers together) |
+| `EODVIEW_AGENT_CREDIT_BUDGET` | `5000` | EODHD credits agent requests may spend per UTC day (overview, news, remote search…) |
 | `EODVIEW_DAILY_CREDIT_BUDGET` | `40000` | Maximum EODHD credits the pipeline spends per UTC day |
 | `EODVIEW_CREDIT_RESERVE` | `15000` | Credits of the plan's daily limit the pipeline never touches |
-| `EODVIEW_API_PORT` | `3001` | Dev only: the server port the Vite dev server proxies `/api` and `/ws` to |
+| `EODVIEW_JOB_CREDIT_RESERVE` | `3000` | Credits `backfill` and `fundamentals` leave unused for the daily prices/actions/FX jobs |
+| `EODVIEW_API_PORT` | `3001` | Dev only: the server port the Vite dev server proxies `/api`, `/ws` and `/mcp` to |
 
 ## Scripts (repo root)
 
@@ -223,5 +269,6 @@ for the full requirements and the module contract.
   - A rectangle is selected by its edges, not by clicking inside it.
   - If loading a symbol's drawings fails, edits to that symbol are not saved until the page is
     reloaded.
-- **Single user.** There is no auth apart from the config guard. Don't expose the server to the
-  internet without a reverse proxy that adds authentication.
+- **Single user.** There is no auth apart from the config guard and the agent API tokens. Don't expose the
+  server to the internet without a reverse proxy that adds authentication, and behind a proxy set
+  `EODVIEW_ADMIN_TOKEN` and `EODVIEW_API_REQUIRE_TOKEN=1` (a same-host proxy makes every request look local).

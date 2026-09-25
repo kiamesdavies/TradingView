@@ -100,3 +100,26 @@ describe("universe status", () => {
     expect(resultRangeText(0, 0, 0)).toBe("#0");
   });
 });
+
+describe("v3 currency display", () => {
+  const { formatCell, rowCurrency, isUsdColumn } = require("./format") as typeof import("./format");
+  test("USD columns get a $ prefix", () => {
+    expect(isUsdColumn("market_cap_usd")).toBe(true);
+    expect(formatCell(2.5e9, { id: "market_cap_usd", format: "money" })).toBe("$2.50B");
+    expect(formatCell(-5, { id: "price_usd", format: "money" })).toBe("-$5.00");
+    expect(formatCell(null, { id: "dollar_volume_usd", format: "money" })).toBe("-");
+  });
+  test("local money values carry the currency code when requested", () => {
+    expect(formatCell(123.4, { id: "price", format: "money" }, { currency: "SEK" })).toBe("123.40 SEK");
+    expect(formatCell(1.23e10, { id: "market_cap", format: "money" }, { currency: "SEK" })).toBe("12.30B SEK");
+    expect(formatCell(123.4, { id: "price", format: "money" })).toBe("123.40");
+    expect(formatCell(5, { id: "perf_3y", format: "pct" }, { currency: "SEK" })).toBe("5.00%");
+    expect(formatCell(-12.5, { id: "ath_pct", format: "pct" })).toBe("-12.50%");
+    expect(formatCell(88.1, { id: "ath", format: "money" }, { currency: "GBP" })).toBe("88.10 GBP");
+  });
+  test("row currency falls back to the market's", () => {
+    expect(rowCurrency({ currency: "gbp" }, "SEK")).toBe("GBP");
+    expect(rowCurrency({}, "SEK")).toBe("SEK");
+    expect(rowCurrency({ currency: "" }, null)).toBeUndefined();
+  });
+});

@@ -85,17 +85,22 @@ function FilterCell({ def, value, universe, customOpen, setCustomOpen }: {
 }) {
   const setFilter = useScreener((s) => s.setFilter);
   const active = !!value;
+  // v3: an active filter the current market can't evaluate is kept (struck through) but not sent
+  const ignored = active && !def.available;
   const custom = value && isCustom(value);
   const selValue = !value ? "" : custom ? CUSTOM_ACTIVE : (value as { value: string }).value;
   const mismatch = (def.appliesTo === "stock" && universe === "etfs") || (def.appliesTo === "etf" && universe === "stocks");
+  const reason = def.unavailableReason ?? "Not available for this market's data";
   const title = !def.available
-    ? def.unavailableReason ?? "Not available with the current data"
+    ? ignored
+      ? `Ignored: ${reason}`
+      : reason
     : mismatch
       ? `Applies to ${def.appliesTo === "etf" ? "ETFs" : "stocks"} only`
       : def.label;
 
   return (
-    <div className={`scr-fcell${active ? " active" : ""}${!def.available ? " disabled" : ""}${mismatch ? " mismatch" : ""}`}>
+    <div className={`scr-fcell${active ? " active" : ""}${!def.available ? " disabled" : ""}${ignored ? " ignored" : ""}${mismatch ? " mismatch" : ""}`}>
       <label className="scr-flabel" htmlFor={`scr-f-${def.id}`} title={title}>{def.label}</label>
       <select
         id={`scr-f-${def.id}`}
@@ -103,6 +108,7 @@ function FilterCell({ def, value, universe, customOpen, setCustomOpen }: {
         value={selValue}
         title={title}
         disabled={!def.available}
+        aria-describedby={!def.available ? `scr-f-${def.id}-why` : undefined}
         onChange={(e) => {
           const v = e.target.value;
           if (v === CUSTOM) setCustomOpen(true);
@@ -117,7 +123,13 @@ function FilterCell({ def, value, universe, customOpen, setCustomOpen }: {
         {custom && <option value={CUSTOM_ACTIVE}>{filterValueLabel(def, value)}</option>}
         {def.custom && <option value={CUSTOM}>Custom…</option>}
       </select>
-      {customOpen && (
+      {!def.available && <span id={`scr-f-${def.id}-why`} className="scr-sr-only">{reason}</span>}
+      {ignored && (
+        <button type="button" className="scr-fclear" aria-label={`Remove ${def.label}`} title={`Remove ${def.label} (ignored for this market)`} onClick={() => setFilter(def.id, null)}>
+          ×
+        </button>
+      )}
+      {customOpen && def.available && (
         <CustomPopover def={def} value={value} onApply={(v) => setFilter(def.id, v)} onClose={() => setCustomOpen(false)} />
       )}
     </div>
@@ -183,6 +195,7 @@ export function FilterChips() {
   const removeFilter = useScreener((s) => s.removeFilter);
   const setTickers = useScreener((s) => s.setTickers);
   const reset = useScreener((s) => s.reset);
+  const metaReady = useScreener((s) => s.metaMarket === s.q.market);
   const defs = useMemo(() => new Map((meta?.filters ?? []).map((d) => [d.id, d])), [meta]);
   if (filters.length === 0 && !tickers.trim()) return null;
   return (
@@ -195,8 +208,10 @@ export function FilterChips() {
       )}
       {filters.map((f) => {
         const def = defs.get(f.id);
+        const ignored = metaReady && !!def && !def.available;
+        const why = ignored ? `Ignored for this market: ${def?.unavailableReason ?? "no data"}` : def?.label ?? f.id;
         return (
-          <span key={f.id} className="scr-chip" title={def?.label ?? f.id}>
+          <span key={f.id} className={`scr-chip${ignored ? " ignored" : ""}`} title={why}>
             <span className="scr-chip-k">{def?.label ?? f.id}:</span> {filterValueLabel(def, f)}
             <button type="button" aria-label={`Remove ${def?.label ?? f.id}`} onClick={() => removeFilter(f.id)}>×</button>
           </span>

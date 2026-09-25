@@ -2,7 +2,7 @@
 import type { ConfigUpdate } from "@eodview/shared";
 import { json, readJson, type Handler, type Router } from "../http";
 import { config } from "../config/config";
-import { assertConfigAccess } from "../config/guard";
+import { assertConfigAccess, isProxied } from "../config/guard";
 
 function guard(req: Request, server: Parameters<Handler>[3]): void {
   assertConfigAccess({
@@ -10,6 +10,7 @@ function guard(req: Request, server: Parameters<Handler>[3]): void {
     authorization: req.headers.get("authorization"),
     ip: server.requestIP(req)?.address,
     host: req.headers.get("host"),
+    proxied: isProxied(req.headers),
   });
 }
 

@@ -1,26 +1,49 @@
-// US market calendar helpers (pure): New York wall clock, NYSE holidays, recent sessions, price-job timing.
+// Market calendars (pure): wall clock in any IANA zone, NYSE holiday rules, sessions, price-job timing.
+// A MarketCalendar combines a market's zone, weekend, close + publish delay and extra (learned) holidays.
+// The ny*/US-named helpers are the US calendar, kept for existing callers and tests.
+import { hhmm, type MarketDef } from "./markets";
 import { addDays } from "./util";
 
-const NY_TZ = "America/New_York";
-const fmt = new Intl.DateTimeFormat("en-US", {
-  timeZone: NY_TZ,
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hourCycle: "h23",
-});
+// ---------- wall clock ----------
+const fmtCache = new Map<string, Intl.DateTimeFormat>();
+function fmtFor(tz: string): Intl.DateTimeFormat {
+  let f = fmtCache.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    });
+    fmtCache.set(tz, f);
+  }
+  return f;
+}
 
-export interface NyParts { date: string; hour: number; minute: number; weekday: number }
+export interface WallParts { date: string; hour: number; minute: number; weekday: number }
+export type NyParts = WallParts;
 
-/** New York wall-clock parts for an instant. weekday 0 = Sunday. */
-export function nyParts(ms: number): NyParts {
+/** Wall-clock parts of an instant in `tz`. weekday 0 = Sunday. */
+export function tzParts(ms: number, tz: string): WallParts {
   const p: Record<string, string> = {};
-  for (const x of fmt.formatToParts(new Date(ms))) p[x.type] = x.value;
+  for (const x of fmtFor(tz).formatToParts(new Date(ms))) p[x.type] = x.value;
   const date = `${p.year}-${p.month}-${p.day}`;
-  return { date, hour: Number(p.hour), minute: Number(p.minute), weekday: weekdayOf(date) };
+  return { date, hour: Number(p.hour) % 24, minute: Number(p.minute), weekday: weekdayOf(date) };
+}
+
+/** Local calendar date in `tz`. */
+export const tzDate = (ms: number, tz: string): string => tzParts(ms, tz).date;
+
+/** UTC ms of a wall-clock time in `tz` on `date` (handles DST; minutes may exceed 59 / hours 23). */
+export function wallToUtc(date: string, hour: number, minute: number, tz: string): number {
+  const [y, m, d] = date.split("-").map(Number) as [number, number, number];
+  const naive = Date.UTC(y, m - 1, d, hour, minute);
+  let guess = naive;
+  for (let i = 0; i < 3; i++) {
+    const p = tzParts(guess, tz);
+    const [py, pm, pd] = p.date.split("-").map(Number) as [number, number, number];
+    const wall = Date.UTC(py, pm - 1, pd, p.hour, p.minute);
+    if (wall === naive) break;
+    guess += naive - wall;
+  }
+  return guess;
 }
 
 export function weekdayOf(date: string): number {
@@ -31,21 +54,6 @@ export const isWeekend = (date: string): boolean => {
   const d = weekdayOf(date);
   return d === 0 || d === 6;
 };
-
-/** UTC ms of a New York wall-clock time on `date` (handles DST). */
-export function nyWallToUtc(date: string, hour: number, minute: number): number {
-  const [y, m, d] = date.split("-").map(Number) as [number, number, number];
-  const naive = Date.UTC(y, m - 1, d, hour, minute);
-  // Offset of NY at (approximately) that instant; refine once for DST edges.
-  let guess = naive + 5 * 3600_000;
-  for (let i = 0; i < 2; i++) {
-    const p = nyParts(guess);
-    const [py, pm, pd] = p.date.split("-").map(Number) as [number, number, number];
-    const wall = Date.UTC(py, pm - 1, pd, p.hour, p.minute);
-    guess += naive - wall;
-  }
-  return guess;
-}
 
 // ---------- NYSE holidays ----------
 function nthWeekday(year: number, month: number, weekday: number, n: number): string {
@@ -97,54 +105,86 @@ export function nyseHolidays(year: number): Set<string> {
   return s;
 }
 
-export function isSession(date: string, extraHolidays?: ReadonlySet<string>): boolean {
-  if (isWeekend(date)) return false;
-  if (nyseHolidays(Number(date.slice(0, 4))).has(date)) return false;
-  return !extraHolidays?.has(date);
+// ---------- market calendars ----------
+export interface MarketCalendar {
+  timezone: string;
+  weekend: readonly number[];
+  nyse: boolean;
+  /** Local minutes after midnight of the first price attempt (close + publish delay). */
+  attemptMin: number;
+  holidays: ReadonlySet<string>;
+}
+
+const EMPTY = new Set<string>();
+
+export function calendarFor(
+  m: Pick<MarketDef, "timezone" | "weekend" | "close" | "publishDelayMin" | "nyseHolidays">,
+  holidays: ReadonlySet<string> = EMPTY,
+): MarketCalendar {
+  return { timezone: m.timezone, weekend: m.weekend, nyse: !!m.nyseHolidays, attemptMin: hhmm(m.close) + m.publishDelayMin, holidays };
+}
+
+/** EODHD publishes US end-of-day data after the close; the first attempt is at this NY time (16:00 + 150 min). */
+export const PRICE_ATTEMPT_NY = { hour: 18, minute: 30 };
+const US_CAL_BASE = { timezone: "America/New_York", weekend: [0, 6], nyseHolidays: true, close: "16:00", publishDelayMin: 150 };
+const usCal = (extra?: ReadonlySet<string>): MarketCalendar => calendarFor(US_CAL_BASE, extra ?? EMPTY);
+
+export function isMarketSession(cal: MarketCalendar, date: string): boolean {
+  if (cal.weekend.includes(weekdayOf(date))) return false;
+  if (cal.nyse && nyseHolidays(Number(date.slice(0, 4))).has(date)) return false;
+  return !cal.holidays.has(date);
 }
 
 /** Up to `n` session dates ending at `end` (inclusive), newest first. */
-export function recentSessions(end: string, n: number, extraHolidays?: ReadonlySet<string>): string[] {
+export function marketRecentSessions(cal: MarketCalendar, end: string, n: number): string[] {
   const out: string[] = [];
   let d = end;
   for (let guard = 0; out.length < n && guard < n * 2 + 30; guard++) {
-    if (isSession(d, extraHolidays)) out.push(d);
+    if (isMarketSession(cal, d)) out.push(d);
     d = addDays(d, -1);
   }
   return out;
 }
 
-export function previousSession(date: string, extraHolidays?: ReadonlySet<string>): string {
+export function marketPreviousSession(cal: MarketCalendar, date: string): string {
   let d = addDays(date, -1);
-  while (!isSession(d, extraHolidays)) d = addDays(d, -1);
+  for (let i = 0; i < 30 && !isMarketSession(cal, d); i++) d = addDays(d, -1);
   return d;
 }
 
-export function nextSession(date: string, extraHolidays?: ReadonlySet<string>): string {
+export function marketNextSession(cal: MarketCalendar, date: string): string {
   let d = addDays(date, 1);
-  while (!isSession(d, extraHolidays)) d = addDays(d, 1);
+  for (let i = 0; i < 30 && !isMarketSession(cal, d); i++) d = addDays(d, 1);
   return d;
 }
 
-/** EODHD publishes US end-of-day data after the close; the first attempt is at this NY time. */
-export const PRICE_ATTEMPT_NY = { hour: 18, minute: 30 };
+/** UTC ms of the first price attempt for session `date`. */
+export function marketAttemptAt(cal: MarketCalendar, date: string): number {
+  return wallToUtc(date, 0, cal.attemptMin, cal.timezone);
+}
 
-/** The newest session whose data should be available by now (its 18:30 NY has passed). */
-export function expectedLatestSession(nowMs: number, extraHolidays?: ReadonlySet<string>): string {
-  const p = nyParts(nowMs);
-  const afterAttempt = p.hour > PRICE_ATTEMPT_NY.hour || (p.hour === PRICE_ATTEMPT_NY.hour && p.minute >= PRICE_ATTEMPT_NY.minute);
-  if (isSession(p.date, extraHolidays) && afterAttempt) return p.date;
-  return previousSession(p.date, extraHolidays);
+/** The newest session whose data should be available by now (its attempt time has passed). */
+export function marketExpectedLatest(cal: MarketCalendar, nowMs: number): string {
+  const today = tzDate(nowMs, cal.timezone);
+  if (isMarketSession(cal, today) && nowMs >= marketAttemptAt(cal, today)) return today;
+  return marketPreviousSession(cal, today);
 }
 
 /** UTC ms of the first price attempt for the session after `date`. */
-export function nextPriceAttemptAfter(date: string, extraHolidays?: ReadonlySet<string>): number {
-  return nyWallToUtc(nextSession(date, extraHolidays), PRICE_ATTEMPT_NY.hour, PRICE_ATTEMPT_NY.minute);
+export function marketNextAttemptAfter(cal: MarketCalendar, date: string): number {
+  return marketAttemptAt(cal, marketNextSession(cal, date));
 }
 
-export function priceAttemptAt(date: string): number {
-  return nyWallToUtc(date, PRICE_ATTEMPT_NY.hour, PRICE_ATTEMPT_NY.minute);
-}
+// ---------- US wrappers (v2 API) ----------
+export const nyParts = (ms: number): NyParts => tzParts(ms, "America/New_York");
+export const nyWallToUtc = (date: string, hour: number, minute: number): number => wallToUtc(date, hour, minute, "America/New_York");
+export const isSession = (date: string, extraHolidays?: ReadonlySet<string>): boolean => isMarketSession(usCal(extraHolidays), date);
+export const recentSessions = (end: string, n: number, extraHolidays?: ReadonlySet<string>): string[] => marketRecentSessions(usCal(extraHolidays), end, n);
+export const previousSession = (date: string, extraHolidays?: ReadonlySet<string>): string => marketPreviousSession(usCal(extraHolidays), date);
+export const nextSession = (date: string, extraHolidays?: ReadonlySet<string>): string => marketNextSession(usCal(extraHolidays), date);
+export const expectedLatestSession = (nowMs: number, extraHolidays?: ReadonlySet<string>): string => marketExpectedLatest(usCal(extraHolidays), nowMs);
+export const nextPriceAttemptAfter = (date: string, extraHolidays?: ReadonlySet<string>): number => marketNextAttemptAfter(usCal(extraHolidays), date);
+export const priceAttemptAt = (date: string): number => marketAttemptAt(usCal(), date);
 
 /** Next midnight UTC (EODHD resets daily usage then). */
 export function nextUtcMidnight(nowMs: number): number {

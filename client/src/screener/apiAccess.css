@@ -1,0 +1,12 @@
+/* Settings → API access (agent API tokens + MCP endpoint). */
+.api-access .kv dd.api-line,
+.api-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.api-line code { flex: 1 1 auto; min-width: 0; overflow-x: auto; white-space: nowrap; font-size: 12px; padding: 3px 6px; border-radius: 4px; background: var(--bg-hover); }
+.api-copy { height: 24px; padding: 0 8px; font-size: 12px; flex: 0 0 auto; }
+.api-danger { height: 24px; padding: 0 8px; font-size: 12px; color: var(--down); border-color: var(--down); }
+.api-token-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.api-token-table th { text-align: left; font-weight: 500; color: var(--muted); padding: 2px 6px 4px 0; }
+.api-token-table td { padding: 3px 6px 3px 0; border-top: 1px solid var(--border); vertical-align: middle; }
+.api-actions { text-align: right; white-space: nowrap; }
+.api-created { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--warn); border-radius: 6px; font-size: 12px; }
+.api-secret { user-select: all; }

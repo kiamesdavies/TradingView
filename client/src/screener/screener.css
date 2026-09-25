@@ -448,3 +448,40 @@
   .scr-toprow .scr-tickers { width: 100%; flex: 1 1 160px; }
   .scr-vtabs { flex-wrap: wrap; }
 }
+
+/* ---------- v3: market selector, ignored filters, API copy ---------- */
+.scr-market { display: inline-flex; align-items: center; gap: 4px; }
+.scr-market-flag { font-size: 14px; line-height: 1; }
+.scr-market .scr-market-select { width: auto; max-width: 240px; }
+.scr-market.loading .scr-market-select { opacity: 0.6; }
+.scr-fcell.ignored .scr-flabel { text-decoration: line-through; color: var(--warn); opacity: 0.8; font-weight: 400; }
+.scr-fcell.ignored .scr-select { text-decoration: line-through; border-color: var(--warn); }
+.scr-fcell.disabled .scr-select { cursor: not-allowed; }
+.scr-fclear {
+  position: absolute;
+  right: -2px;
+  top: -4px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--warn);
+  color: #fff;
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.scr-chip.ignored { opacity: 0.7; border-style: dashed; }
+.scr-chip.ignored > .scr-chip-k,
+.scr-chip.ignored { text-decoration: line-through; }
+.scr-chip.ignored button { text-decoration: none; }
+.scr-ignored { font-size: 12px; color: var(--warn); }
+.scr-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

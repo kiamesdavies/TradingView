@@ -1,6 +1,9 @@
-import { useEffect, useState, type FormEvent } from "react";
-import type { ConfigView } from "@eodview/shared";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
+import type { ApiTokenView, ConfigView } from "@eodview/shared";
 import { ApiRequestError } from "../api/http";
+import { claudeMcpAddCommand, isLoopbackHost, mcpUrl, serverOrigin, TOKEN_ENV } from "../screener/apiLinks";
+import { copyText, tokensApi, type CreatedToken } from "../screener/tokensApi";
+import "../screener/apiAccess.css";
 import { useStore } from "../state/store";
 import { configApi } from "./configApi";
 import { Modal } from "./Modal";
@@ -146,6 +149,8 @@ function SettingsDialogInner() {
           </dl>
         </section>
 
+        <ApiAccessSection adminToken={adminToken.trim() || undefined} onForbidden={() => setNeedsToken(true)} serverPort={config?.port} />
+
         <form className="settings-section" onSubmit={submit}>
           <h3>{config?.hasKey ? "Replace key" : "Set key"}</h3>
           <div className="input-with-btn">
@@ -193,5 +198,229 @@ function SettingsDialogInner() {
         </form>
       </div>
     </Modal>
+  );
+}
+
+// ---------------- API access (agent API tokens + MCP endpoint) ----------------
+
+function fmtTime(t: number | null): string {
+  if (!t) return "never";
+  const d = new Date(t * 1000);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      className="btn btn-ghost api-copy"
+      onClick={async () => {
+        const ok = await copyText(text);
+        if (!ok) useShell.getState().pushToast({ kind: "error", title: "Copy failed — select the text and copy it manually" });
+        setDone(ok);
+        if (ok) setTimeout(() => setDone(false), 1500);
+      }}
+    >
+      {done ? "Copied" : label}
+    </button>
+  );
+}
+
+function ApiAccessSection({ adminToken, onForbidden, serverPort }: {
+  adminToken: string | undefined;
+  onForbidden: () => void;
+  serverPort: number | undefined;
+}) {
+  const [tokens, setTokens] = useState<ApiTokenView[] | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [created, setCreated] = useState<CreatedToken | null>(null);
+  const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
+
+  const fail = useCallback(
+    (e: unknown, set: (m: string) => void) => {
+      if (e instanceof ApiRequestError && e.status === 404) {
+        set("The agent API is not available on this server (404) — update the server.");
+        return;
+      }
+      const d = describeError(e);
+      if (d.forbidden) onForbidden();
+      set(d.message);
+    },
+    [onForbidden],
+  );
+
+  const load = useCallback(() => {
+    let cancelled = false;
+    tokensApi
+      .list(adminToken)
+      .then((list) => {
+        if (cancelled) return;
+        setTokens(Array.isArray(list) ? list : []);
+        setListError(null);
+      })
+      .catch((e: unknown) => !cancelled && fail(e, setListError));
+    return () => {
+      cancelled = true;
+    };
+  }, [adminToken, fail]);
+  useEffect(() => load(), [load]);
+
+  const create = async (e: FormEvent) => {
+    e.preventDefault();
+    const n = name.trim();
+    if (!n) {
+      setError("Give the token a name, e.g. the agent that will use it.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const t = await tokensApi.create(n, adminToken);
+      setCreated(t);
+      setName("");
+      const { token: _secret, ...view } = t;
+      setTokens((list) => [...(list ?? []).filter((x) => x.id !== t.id), view]);
+    } catch (err) {
+      fail(err, setError);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (id: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await tokensApi.revoke(id, adminToken);
+      setTokens((list) => (list ?? []).filter((x) => x.id !== id));
+      if (created?.id === id) setCreated(null);
+      setConfirmRevoke(null);
+    } catch (err) {
+      fail(err, setError);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const origin = serverOrigin(window.location, serverPort);
+  const url = mcpUrl(origin);
+  const remote = !isLoopbackHost(window.location.hostname);
+  const addCmd = claudeMcpAddCommand(url, remote);
+  const devProxy = window.location.port === "5173";
+
+  return (
+    <section className="settings-section api-access">
+      <h3>API access</h3>
+      <p className="hint">
+        Agents can call the screener over REST (<code>/api/v1/screen</code>, spec at <code>/api/openapi.json</code>) or
+        MCP. Callers on this machine need no token; others send <code>Authorization: Bearer &lt;token&gt;</code>.
+        Tokens are read-only.
+      </p>
+
+      <dl className="kv">
+        <dt>MCP endpoint</dt>
+        <dd className="api-line">
+          <code className="mono">{url}</code>
+          <CopyButton text={url} />
+        </dd>
+        <dt>Claude Code</dt>
+        <dd className="api-line">
+          <code className="mono">{addCmd}</code>
+          <CopyButton text={addCmd} />
+        </dd>
+      </dl>
+      {devProxy && (
+        <p className="hint">
+          Dev mode: the page runs on Vite (5173), which doesn't proxy <code>/mcp</code>, so the URL points at the server
+          port{serverPort ? ` (${serverPort})` : " (3001 assumed)"}.
+        </p>
+      )}
+      {remote && (
+        <p className="hint">
+          Replace <code>&lt;token&gt;</code> with a token created below; for REST/curl export it as <code>{TOKEN_ENV}</code>.
+        </p>
+      )}
+
+      <div className="api-tokens">
+        {listError ? (
+          <div className="error-text" role="alert">{listError}</div>
+        ) : tokens === null ? (
+          <span className="muted">Loading tokens…</span>
+        ) : tokens.length === 0 ? (
+          <span className="muted">No tokens yet.</span>
+        ) : (
+          <table className="api-token-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Token</th>
+                <th>Created</th>
+                <th>Last used</th>
+                <th aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {tokens.map((t) => (
+                <tr key={t.id}>
+                  <td>{t.name}</td>
+                  <td className="mono">{t.prefix}…</td>
+                  <td>{fmtTime(t.createdAt)}</td>
+                  <td>{fmtTime(t.lastUsedAt)}</td>
+                  <td className="api-actions">
+                    {confirmRevoke === t.id ? (
+                      <>
+                        <button type="button" className="btn btn-ghost api-copy" onClick={() => setConfirmRevoke(null)} disabled={busy}>Cancel</button>
+                        <button type="button" className="btn api-danger" onClick={() => void revoke(t.id)} disabled={busy}>Revoke</button>
+                      </>
+                    ) : (
+                      <button type="button" className="btn btn-ghost api-copy" onClick={() => setConfirmRevoke(t.id)} disabled={busy}>Revoke…</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {created && (
+        <div className="api-created" role="status">
+          <div>
+            <b>Token “{created.name}” created.</b> Copy it now — it is stored hashed and <b>won't be shown again</b>.
+          </div>
+          <div className="api-line">
+            <code className="mono api-secret">{created.token}</code>
+            <CopyButton text={created.token} />
+            <button type="button" className="btn btn-ghost api-copy" onClick={() => setCreated(null)}>Done</button>
+          </div>
+        </div>
+      )}
+
+      <form className="input-with-btn" onSubmit={create}>
+        <input
+          className="input"
+          placeholder="New token name (e.g. research-agent)"
+          value={name}
+          maxLength={80}
+          onChange={(e) => {
+            setName(e.target.value);
+            setError(null);
+          }}
+        />
+        <button type="submit" className="btn" disabled={busy || !name.trim() || !!listError && /404/.test(listError)}>
+          {busy ? "Working…" : "Create token"}
+        </button>
+      </form>
+      {error && <div className="error-text" role="alert">{error}</div>}
+      {listError && (
+        <div className="form-row end">
+          <button type="button" className="btn btn-ghost" onClick={() => { setListError(null); setTokens(null); load(); }}>Retry</button>
+        </div>
+      )}
+    </section>
   );
 }

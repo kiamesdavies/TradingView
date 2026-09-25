@@ -16,6 +16,10 @@ export const COST = {
   calendar: 1,
   symbolList: 1,
   eod: 1,
+  /** /real-time: 1 per symbol (FX rates). */
+  realtime: 1,
+  /** /exchange-details (holidays, trading hours). */
+  exchangeDetails: 5,
 } as const;
 
 export class BudgetExhausted extends Error {
@@ -62,6 +66,17 @@ export class CreditGuard {
     return row?.n ?? 0;
   }
 
+  /** Today's spend per market: ledger keys "job:MARKET"; global jobs (fx, earnings, news) go under "*". */
+  byMarketToday(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [job, n] of Object.entries(this.byJobToday())) {
+      const i = job.indexOf(":");
+      const m = i > 0 ? job.slice(i + 1) : "*";
+      out[m] = (out[m] ?? 0) + n;
+    }
+    return out;
+  }
+
   byJobToday(): Record<string, number> {
     const out: Record<string, number> = {};
     for (const r of this.db
@@ -80,12 +95,19 @@ export class CreditGuard {
     this.sinceCheck += credits;
   }
 
-  /** Throws BudgetExhausted when spending `credits` more would exceed either limit. */
-  async ensure(credits: number): Promise<void> {
+  /**
+   * Throws BudgetExhausted when spending `credits` more would exceed either limit. `keep` leaves that many credits
+   * of both limits unused (low-priority jobs keep room for the daily prices / corporate-actions / FX jobs).
+   */
+  async ensure(credits: number, keep = 0): Promise<void> {
     const resume = nextUtcMidnight(this.now());
     const used = this.usedToday();
-    if (used + credits > this.budget) {
-      throw new BudgetExhausted(resume, `daily credit budget reached (${used}/${this.budget})`);
+    keep = Math.max(0, keep);
+    if (used + credits > this.budget - keep) {
+      throw new BudgetExhausted(
+        resume,
+        keep ? `daily credit budget reached for background jobs (${used}/${this.budget}, ${keep} kept for daily prices)` : `daily credit budget reached (${used}/${this.budget})`,
+      );
     }
     if (!this.getUsage) return;
     const now = this.now();
@@ -103,8 +125,8 @@ export class CreditGuard {
     const req = this.lastUsage.apiRequests, limit = this.lastUsage.dailyRateLimit;
     if (typeof req === "number" && typeof limit === "number" && limit > 0) {
       const projected = req + this.sinceCheck + credits;
-      if (projected > limit - this.reserve) {
-        throw new BudgetExhausted(resume, `account usage near the daily limit (${req + this.sinceCheck}/${limit}, keeping ${this.reserve} free)`);
+      if (projected > limit - this.reserve - keep) {
+        throw new BudgetExhausted(resume, `account usage near the daily limit (${req + this.sinceCheck}/${limit}, keeping ${this.reserve + keep} free)`);
       }
     }
   }

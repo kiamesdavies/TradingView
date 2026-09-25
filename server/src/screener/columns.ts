@@ -19,8 +19,11 @@ export const COLUMNS: ColumnSpec[] = [
   c("industry", "Industry", "text"),
   c("country", "Country", "text"),
   c("exchange", "Exchange", "text"),
+  c("market", "Market", "text"),
+  c("currency", "Currency", "text"),
   c("kind", "Type", "text"),
   c("market_cap", "Market Cap", "money"),
+  c("market_cap_usd", "Mkt Cap $", "money"),
   c("pe", "P/E", "ratio"),
   c("forward_pe", "Fwd P/E", "ratio"),
   c("peg", "PEG", "ratio"),
@@ -70,6 +73,8 @@ export const COLUMNS: ColumnSpec[] = [
   c("perf_6m", "Perf Half", "pct"),
   c("perf_1y", "Perf Year", "pct"),
   c("perf_ytd", "Perf YTD", "pct"),
+  c("perf_3y", "Perf 3Y", "pct"),
+  c("perf_5y", "Perf 5Y", "pct"),
   c("volatility_1w", "Volatility W", "pct"),
   c("volatility_1m", "Volatility M", "pct"),
   c("beta", "Beta", "ratio"),
@@ -82,6 +87,9 @@ export const COLUMNS: ColumnSpec[] = [
   c("low_52w_pct", "52W Low", "pct"),
   c("high_20d_pct", "20D High", "pct"),
   c("low_20d_pct", "20D Low", "pct"),
+  c("ath_pct", "ATH %", "pct"),
+  c("atl_pct", "ATL %", "pct"),
+  c("ath_date", "ATH Date", "date"),
   c("rsi14", "RSI", "number"),
   c("candlestick", "Candle", "text"),
   c("gap_pct", "Gap", "pct"),
@@ -89,6 +97,8 @@ export const COLUMNS: ColumnSpec[] = [
   c("rel_volume", "Rel Volume", "ratio"),
   c("avg_volume", "Avg Volume", "volume"),
   c("dollar_volume", "$ Volume", "money"),
+  c("dollar_volume_usd", "Dollar Vol $", "money"),
+  c("price_usd", "Price $", "money"),
   c("price", "Price", "money"),
   c("change_pct", "Change", "pct"),
   c("volume", "Volume", "volume"),
@@ -134,12 +144,12 @@ export const VIEWS: ScreenerView[] = [
   },
   {
     id: "performance", label: "Performance",
-    columns: ["ticker", "perf_1w", "perf_1m", "perf_3m", "perf_6m", "perf_ytd", "perf_1y", "volatility_1w",
+    columns: ["ticker", "perf_1w", "perf_1m", "perf_3m", "perf_6m", "perf_ytd", "perf_1y", "perf_3y", "perf_5y", "volatility_1w",
       "volatility_1m", "analyst_recom", "avg_volume", "rel_volume", "price", "change_pct", "volume"],
   },
   {
     id: "technical", label: "Technical",
-    columns: ["ticker", "beta", "atr14", "sma20_pct", "sma50_pct", "sma200_pct", "high_52w_pct", "low_52w_pct", "rsi14",
+    columns: ["ticker", "beta", "atr14", "sma20_pct", "sma50_pct", "sma200_pct", "high_52w_pct", "low_52w_pct", "ath_pct", "rsi14",
       "price", "change_pct", "change_from_open_pct", "gap_pct", "volume"],
   },
   {
@@ -150,8 +160,22 @@ export const VIEWS: ScreenerView[] = [
   { id: "charts", label: "Charts", columns: OVERVIEW },
 ];
 const VIEW_BY_ID = new Map(VIEWS.map((v) => [v.id, v]));
-export function getView(id: string): ScreenerView | undefined {
-  return VIEW_BY_ID.get(id);
+/** Views as shown for `market` (default US = the static VIEWS). */
+export function getView(id: string, market?: string): ScreenerView | undefined {
+  const v = VIEW_BY_ID.get(id);
+  return v && market && market !== "US" ? adaptView(v) : v;
+}
+
+// Non-US / ALL: sizes in USD so rows from different currencies compare; Overview/Charts also show Market + Currency.
+const OVERVIEW_INTL = ["ticker", "company", "market", "sector", "industry", "country", "market_cap_usd", "pe", "price", "currency",
+  "change_pct", "dollar_volume_usd"];
+function adaptView(v: ScreenerView): ScreenerView {
+  if (v.id === "overview" || v.id === "charts") return { ...v, columns: OVERVIEW_INTL };
+  return { ...v, columns: v.columns.map((c) => (c === "market_cap" ? "market_cap_usd" : c)) };
+}
+
+export function viewsFor(market?: string): ScreenerView[] {
+  return VIEWS.map((v) => getView(v.id, market)!);
 }
 
 export function columnDefs(): ScreenerColumnDef[] {

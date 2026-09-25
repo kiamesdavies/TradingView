@@ -1,38 +1,49 @@
 // Pure parsers for the EODHD payloads the universe pipeline consumes (see parsers.test.ts).
 import { timingOf } from "./derive";
+import { MARKETS, type MarketDef } from "./markets";
 import { isoDate, num, str, values } from "./util";
 
 export type UniverseKind = "stock" | "etf";
 
 export interface UniverseSymbolRow {
-  symbol: string; // "AAPL.US"
+  symbol: string; // "AAPL.US", "SIVE.ST"
   code: string;
   name: string;
   exchange: string;
   kind: UniverseKind;
   isin: string | null;
+  /** Quote currency from the symbol list (e.g. "GBX" for pence-quoted LSE lines). */
+  currency?: string | null;
 }
 
-const STOCK_EXCHANGES = new Set(["NYSE", "NASDAQ", "AMEX", "NYSE MKT"]);
-const ETF_EXCHANGES = new Set(["NYSE ARCA", "NASDAQ", "BATS", "NYSE", "AMEX"]);
-
-/** /exchange-symbol-list/US → listed common stocks and ETFs. */
-export function filterSymbolList(raw: unknown): UniverseSymbolRow[] {
+/** /exchange-symbol-list/{EX} → the market's listed common stocks (and ETFs where the market admits them). */
+export function filterSymbolList(raw: unknown, market: MarketDef = US_MARKET): UniverseSymbolRow[] {
+  const f = market.filter;
+  const stockEx = f.stockExchanges ? new Set(f.stockExchanges) : null;
+  const etfEx = f.etfExchanges ? new Set(f.etfExchanges) : null;
+  const curs = f.currencies ? new Set(f.currencies) : null;
   const out = new Map<string, UniverseSymbolRow>();
   for (const r of values<Record<string, unknown>>(raw)) {
     const code = str(r?.Code);
     const type = str(r?.Type);
     const exchange = str(r?.Exchange)?.toUpperCase() ?? "";
     if (!code || !type || /[\s^/]/.test(code)) continue;
+    if (f.excludeCode && f.excludeCode.test(code)) continue;
+    const currency = str(r?.Currency);
     let kind: UniverseKind | null = null;
-    if (type === "Common Stock" && STOCK_EXCHANGES.has(exchange)) kind = "stock";
-    else if (type === "ETF" && ETF_EXCHANGES.has(exchange)) kind = "etf";
+    if (f.stockTypes.includes(type) && (!stockEx || stockEx.has(exchange))) kind = "stock";
+    else if (f.etfs && type === "ETF" && (!etfEx || etfEx.has(exchange))) kind = "etf";
     if (!kind) continue;
-    const symbol = `${code}.US`;
-    out.set(symbol, { symbol, code, name: str(r?.Name) ?? code, exchange: exchange === "NYSE MKT" ? "AMEX" : exchange, kind, isin: str(r?.Isin) });
+    if (curs && kind === "stock" && !(currency && curs.has(currency))) continue;
+    const symbol = `${code}.${market.code}`;
+    out.set(symbol, {
+      symbol, code, name: str(r?.Name) ?? code, exchange: f.exchangeAlias?.[exchange] ?? (exchange || market.code), kind, isin: str(r?.Isin), currency,
+    });
   }
   return [...out.values()];
 }
+
+const US_MARKET = MARKETS[0]!;
 
 export interface BulkBar {
   code: string;
@@ -51,7 +62,7 @@ export interface BulkBar {
   avgVol50: number | null;
 }
 
-/** /eod-bulk-last-day/US rows (plain or filter=extended). Rows without a usable close are dropped. */
+/** /eod-bulk-last-day/{EX} rows (plain or filter=extended). Rows without a usable close are dropped. */
 export function parseBulk(raw: unknown): BulkBar[] {
   const out: BulkBar[] = [];
   for (const r of values<Record<string, unknown>>(raw)) {
@@ -95,7 +106,7 @@ export function dominantDate(rows: { date: string }[]): string | null {
 
 export interface CorporateAction { code: string; date: string; kind: "split" | "dividend" }
 
-/** /eod-bulk-last-day/US?type=splits|dividends */
+/** /eod-bulk-last-day/{EX}?type=splits|dividends */
 export function parseActions(raw: unknown, kind: "split" | "dividend"): CorporateAction[] {
   const out: CorporateAction[] = [];
   for (const r of values<Record<string, unknown>>(raw)) {
@@ -113,14 +124,14 @@ export interface CalendarEarnings {
   hasActual: boolean;
 }
 
-/** /calendar/earnings → US rows only. */
-export function parseEarningsCalendar(raw: unknown): CalendarEarnings[] {
+/** /calendar/earnings (worldwide) → rows whose symbol passes `accept` (default: US only). */
+export function parseEarningsCalendar(raw: unknown, accept: (symbol: string) => boolean = (s) => s.endsWith(".US")): CalendarEarnings[] {
   const list = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>).earnings : raw;
   const out: CalendarEarnings[] = [];
   for (const r of values<Record<string, unknown>>(list)) {
     const code = str(r?.code);
     const reportDate = isoDate(r?.report_date);
-    if (!code || !reportDate || !code.endsWith(".US")) continue;
+    if (!code || !reportDate || !accept(code)) continue;
     out.push({ symbol: code, reportDate, timing: timingOf(r?.before_after_market), hasActual: num(r?.actual) !== null });
   }
   return out;
@@ -128,10 +139,14 @@ export function parseEarningsCalendar(raw: unknown): CalendarEarnings[] {
 
 export interface EarningsDates { next: { date: string; timing: "bmo" | "amc" | null } | null; last: string | null }
 
-/** Per symbol: next report on/after `today`, and the latest report before `today` (or today, when already reported). */
-export function earningsBySymbol(rows: CalendarEarnings[], today: string): Map<string, EarningsDates> {
+/**
+ * Per symbol: next report on/after its market's `today`, and the latest report before it (or today, when already
+ * reported). `today` is a date or a function of the symbol (markets in different time zones).
+ */
+export function earningsBySymbol(rows: CalendarEarnings[], todayOf: string | ((symbol: string) => string)): Map<string, EarningsDates> {
   const out = new Map<string, EarningsDates>();
   for (const r of rows) {
+    const today = typeof todayOf === "string" ? todayOf : todayOf(r.symbol);
     const e = out.get(r.symbol) ?? { next: null, last: null };
     const past = r.reportDate < today || (r.reportDate === today && r.hasActual);
     if (past) {
@@ -144,7 +159,7 @@ export function earningsBySymbol(rows: CalendarEarnings[], today: string): Map<s
   return out;
 }
 
-/** /fundamentals/GSPC.INDX?filter=Components → ["AAPL.US", …] */
+/** /fundamentals/{IDX}.INDX?filter=Components → ["AAPL.US", "AZN.ST", …] */
 export function parseIndexComponents(raw: unknown): string[] {
   const rows = raw && typeof raw === "object" && (raw as Record<string, unknown>).Components ? (raw as Record<string, unknown>).Components : raw;
   const out = new Set<string>();
@@ -152,7 +167,9 @@ export function parseIndexComponents(raw: unknown): string[] {
     const code = str(r?.Code);
     if (!code) continue;
     const ex = str(r?.Exchange) ?? "US";
-    out.add(`${code.replace(/\./g, "-")}.${ex === "US" || /nyse|nasdaq|amex|bats/i.test(ex) ? "US" : ex}`);
+    const us = ex === "US" || /nyse|nasdaq|amex|bats/i.test(ex);
+    // US class shares use "-" in EODHD tickers (BRK-B); other exchanges keep their own codes.
+    out.add(us ? `${code.replace(/\./g, "-")}.US` : `${code}.${ex.toUpperCase()}`);
   }
   return [...out];
 }
@@ -169,9 +186,29 @@ export function parseNews(raw: unknown): { latest: Map<string, number>; oldest: 
     const sec = Math.floor(t / 1000);
     if (oldest === null || sec < oldest) oldest = sec;
     for (const s of values<unknown>(a?.symbols)) {
-      if (typeof s !== "string" || !s.endsWith(".US")) continue;
+      if (typeof s !== "string" || !s.includes(".")) continue;
       if ((latest.get(s) ?? 0) < sec) latest.set(s, sec);
     }
   }
   return { latest, oldest, count };
+}
+
+export interface ExchangeDetails { timezone: string | null; close: string | null; holidays: string[]; workingDays: string | null }
+
+/** /exchange-details/{EX} → IANA zone, local close "HH:MM", full-day holiday dates (early closes are ignored). */
+export function parseExchangeDetails(raw: unknown): ExchangeDetails {
+  const r = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, any>) : {};
+  const holidays = new Set<string>();
+  for (const h of values<Record<string, unknown>>(r.ExchangeHolidays)) {
+    const d = isoDate(h?.Date);
+    const type = str(h?.Type)?.toLowerCase();
+    if (d && (!type || type === "official" || type === "bank")) holidays.add(d);
+  }
+  const close = str(r.TradingHours?.Close);
+  return {
+    timezone: str(r.Timezone),
+    close: close && /^\d{2}:\d{2}/.test(close) ? close.slice(0, 5) : null,
+    holidays: [...holidays].sort(),
+    workingDays: str(r.TradingHours?.WorkingDays),
+  };
 }

@@ -2,14 +2,19 @@
 // Only registry-defined column names ever reach SQL text; all user values are bound parameters.
 import type { Database } from "bun:sqlite";
 import type {
-  ScreenerFilterDef, ScreenerFilterValue, ScreenerMeta, ScreenerOption, ScreenerQuery, ScreenerResponse, UniverseStatus,
+  MarketInfo, ScreenerFilterDef, ScreenerFilterValue, ScreenerMeta, ScreenerOption, ScreenerQuery, ScreenerResponse,
+  UniverseStatus,
 } from "@eodview/shared";
 import { HttpError } from "../http";
 import { METRICS_TABLE } from "../universe/metricsSchema";
-import { columnDefs, getColumn, getView, VIEWS, type ColumnSpec } from "./columns";
-import { isIsoDate, nyToday } from "./dates";
-import { FILTERS, getFilter, type FilterSpec, type OptionSpec } from "./filters";
-import { and, makeColResolver, or, quoteIdent, type CompileCtx, type Pred, type SqlParam } from "./sql";
+import { columnDefs, getColumn, getView, VIEWS, viewsFor, type ColumnSpec } from "./columns";
+import { isIsoDate, MARKET_TZ, nyToday, todayIn } from "./dates";
+import { getMarket } from "../universe/markets";
+import { canonicalOption, filterCode, FILTERS, getFilter, type FilterSpec, type OptionSpec } from "./filters";
+import { indexOptions } from "./indexes";
+import {
+  and, DEFAULT_MARKET, makeColResolver, or, quoteIdent, USD_REMAP, usdCtx, type CompileCtx, type Pred, type SqlParam,
+} from "./sql";
 
 export const MAX_LIMIT = 500;
 export const DEFAULT_LIMIT = 50;
@@ -18,6 +23,10 @@ const MAX_MULTI = 50;
 const MAX_TICKERS = 500;
 const DYNAMIC_TTL_MS = 10 * 60_000;
 const DYNAMIC_MISS_REFRESH_MS = 5_000;
+/** A filter whose columns are filled for fewer than this fraction of a market's rows is shown unavailable there. */
+export const MIN_COVERAGE = 0.15;
+export const ALL_MARKETS = "ALL";
+const MARKET_RE = /^[A-Z0-9]{1,12}$/;
 
 export type PresetQuery = Omit<ScreenerQuery, "offset" | "limit">;
 
@@ -74,21 +83,22 @@ function normalizeFilters(v: unknown, checkDynamic: (f: FilterSpec, slug: string
       if (typeof raw.value !== "string") bad(`filter ${id}: value must be a string`);
       const value = raw.value.trim();
       if (!value) return; // "Any"
-      const parts = value.split("|");
+      const parts = value.split("|").map((p) => canonicalOption(f, p.trim()));
       if (parts.length > MAX_MULTI) bad(`filter ${id}: at most ${MAX_MULTI} values`);
       for (const p of parts) {
         if (f.options.some((o) => o.value === p)) continue;
+        if (f.late?.(p)) continue;
         if (f.dynamic && DYN_SLUG_RE.test(p) && checkDynamic(f, p)) continue;
         bad(`filter "${f.label}": unknown option ${show(p)}`);
       }
-      out.push({ id, value: parts.join("|") });
+      out.push({ id: f.id, value: [...new Set(parts)].join("|") });
       return;
     }
     if (!f.custom) bad(`filter "${f.label}" does not support a custom range`);
     const min = parseBound(raw.min, f, "min");
     const max = parseBound(raw.max, f, "max");
     if (min === undefined && max === undefined) return; // "Any"
-    out.push({ id, ...(min !== undefined ? { min } : {}), ...(max !== undefined ? { max } : {}) });
+    out.push({ id: f.id, ...(min !== undefined ? { min } : {}), ...(max !== undefined ? { max } : {}) });
   });
   return out;
 }
@@ -96,11 +106,23 @@ function normalizeFilters(v: unknown, checkDynamic: (f: FilterSpec, slug: string
 export interface NormalizeOpts {
   /** Validate dynamic option slugs (sector/industry/…) against the current universe. Presets only check the shape. */
   checkDynamic?: (f: FilterSpec, slug: string) => boolean;
+  /** Validate a market code (already upper-cased, not "US"/"ALL"). Default: any well-formed code. */
+  checkMarket?: (code: string) => boolean;
+}
+
+export function normalizeMarket(v: unknown, check?: (code: string) => boolean): string {
+  if (v === undefined || v === null || v === "") return DEFAULT_MARKET;
+  if (typeof v !== "string") bad("market must be a string");
+  const m = v.trim().toUpperCase();
+  if (m === DEFAULT_MARKET || m === ALL_MARKETS) return m;
+  if (!MARKET_RE.test(m) || (check && !check(m))) bad(`unknown market ${show(v)}`);
+  return m;
 }
 
 export function normalizePresetQuery(body: unknown, opts: NormalizeOpts = {}): PresetQuery {
   if (!isObj(body)) bad("query must be a JSON object");
   const filters = normalizeFilters(body.filters, opts.checkDynamic ?? (() => true));
+  const market = normalizeMarket(body.market, opts.checkMarket);
   const universe = body.universe ?? "stocks";
   if (universe !== "stocks" && universe !== "etfs" && universe !== "all") bad(`universe must be stocks, etfs or all`);
   let tickers: string | undefined;
@@ -117,7 +139,7 @@ export function normalizePresetQuery(body: unknown, opts: NormalizeOpts = {}): P
   if (typeof column !== "string" || (column !== "symbol" && !getColumn(column))) bad(`unknown sort column ${show(column)}`);
   const dir = sortRaw.dir ?? "asc";
   if (dir !== "asc" && dir !== "desc") bad(`sort.dir must be asc or desc`);
-  return { filters, universe, ...(tickers ? { tickers } : {}), view, sort: { column, dir } };
+  return { filters, market, universe, ...(tickers ? { tickers } : {}), view, sort: { column, dir } };
 }
 
 export function normalizeQuery(body: unknown, opts: NormalizeOpts = {}): ScreenerQuery {
@@ -135,13 +157,17 @@ export function normalizeQuery(body: unknown, opts: NormalizeOpts = {}): Screene
 
 export type DynamicResolver = (f: FilterSpec, slug: string) => string[] | null;
 
-export function compileFilter(v: ScreenerFilterValue, ctx: CompileCtx, resolve: DynamicResolver): Pred {
+export function compileFilter(v: ScreenerFilterValue, ctx0: CompileCtx, resolve: DynamicResolver): Pred {
   const f = getFilter(v.id);
   if (!f) bad(`unknown filter "${v.id}"`);
+  const ctx = usdCtx(ctx0);
   if ("value" in v) {
-    const preds = v.value.split("|").map((part): Pred => {
+    const preds = v.value.split("|").map((raw): Pred => {
+      const part = canonicalOption(f, raw);
       const o = f.options.find((x) => x.value === part);
       if (o) return o.build(ctx);
+      const late = f.late?.(part);
+      if (late) return late(ctx);
       const raws = f.dynamic ? resolve(f, part) : null;
       if (!raws || !raws.length) bad(`filter "${f.label}": unknown option ${show(part)}`);
       return { sql: `${ctx.col(f.dynamic!.col)} IN (${raws.map(() => "?").join(", ")})`, params: raws };
@@ -168,10 +194,21 @@ export interface BuiltQuery {
   columns: string[];
 }
 
-export function buildQuery(q: ScreenerQuery, ctx: CompileCtx, resolve: DynamicResolver): BuiltQuery {
-  const view = getView(q.view);
+export interface BuildOpts {
+  /** Market codes "ALL" expands to (enabled markets). Undefined/empty → no market restriction for ALL. */
+  allMarkets?: string[];
+}
+
+export function buildQuery(q: ScreenerQuery, ctx0: CompileCtx, resolve: DynamicResolver, opts: BuildOpts = {}): BuiltQuery {
+  const market = q.market ?? DEFAULT_MARKET;
+  const ctx: CompileCtx = { ...ctx0, usd: market !== DEFAULT_MARKET };
+  const view = getView(q.view, market);
   if (!view) bad(`unknown view ${show(q.view)}`);
   const preds: Pred[] = [];
+  if (market !== ALL_MARKETS) preds.push({ sql: `${ctx.col("market")} = ?`, params: [market] });
+  else if (opts.allMarkets?.length) {
+    preds.push({ sql: `${ctx.col("market")} IN (${opts.allMarkets.map(() => "?").join(", ")})`, params: [...opts.allMarkets] });
+  }
   if (q.universe === "stocks") preds.push({ sql: `${ctx.col("kind")} = ?`, params: ["stock"] });
   else if (q.universe === "etfs") preds.push({ sql: `${ctx.col("kind")} = ?`, params: ["etf"] });
   if (q.tickers) {
@@ -190,7 +227,9 @@ export function buildQuery(q: ScreenerQuery, ctx: CompileCtx, resolve: DynamicRe
     if (!c) throw new Error(`view ${view.id} references unknown column ${id}`);
     selects.push(`${columnExpr(c, ctx)} AS ${quoteIdent(c.id)}`);
   }
-  const sortCol = q.sort.column === "symbol" ? null : getColumn(q.sort.column);
+  // Outside the US, sorting by market cap compares USD values (rows may be in different currencies).
+  const sortId = ctx.usd && USD_REMAP[q.sort.column] === "market_cap_usd" ? "market_cap_usd" : q.sort.column;
+  const sortCol = q.sort.column === "symbol" ? null : getColumn(sortId);
   if (q.sort.column !== "symbol" && !sortCol) bad(`unknown sort column ${show(q.sort.column)}`);
   const sortExpr = sortCol ? columnExpr(sortCol, ctx) : ctx.col("symbol");
   const dir = q.sort.dir === "desc" ? "DESC" : "ASC";
@@ -207,12 +246,28 @@ export function buildQuery(q: ScreenerQuery, ctx: CompileCtx, resolve: DynamicRe
   };
 }
 
+/**
+ * Calendar context of date-relative filters (earnings / IPO / news "today", "this week", "after market close"):
+ * the selected market's zone and close from the market registry; "ALL" mixes zones, so it uses UTC days (with the
+ * US close for "after market close"); unknown markets fall back to New York.
+ */
+export function dateCtx(market: string, now: Date): Pick<CompileCtx, "today" | "tz" | "close"> {
+  const usClose = { hour: 16, minute: 0, tz: MARKET_TZ };
+  if (market === ALL_MARKETS) return { today: todayIn(now, "UTC"), tz: "UTC", close: usClose };
+  const m = market === DEFAULT_MARKET ? undefined : getMarket(market);
+  if (!m) return { today: nyToday(now), tz: MARKET_TZ, close: usClose };
+  const [h, mi] = m.close.split(":").map(Number) as [number, number];
+  return { today: todayIn(now, m.timezone), tz: m.timezone, close: { hour: h, minute: mi || 0, tz: m.timezone } };
+}
+
 // ---------------------------------------------------------------- engine bound to a database
 
-interface DynEntry { at: number; bySlug: Map<string, { label: string; raws: string[] }> }
+interface DynEntry { at: number; bySlug: Map<string, { label: string; raws: string[] }>; byLabel: Map<string, string> }
 
 export interface ScreenerEngineOpts {
   now?: () => Date;
+  /** Markets the pipeline tracks (universe `listMarkets`). Default / empty: derived from the table's `market` values. */
+  markets?: () => MarketInfo[];
 }
 
 /** Columns each filter reads (discovered by compiling every option with a recording resolver). */
@@ -226,134 +281,287 @@ function filterColumns(f: FilterSpec): string[] {
 }
 const FILTER_COLS = new Map(FILTERS.map((f) => [f.id, filterColumns(f)]));
 
+/** Sparse-by-nature columns (NULL = "no event") → a column that says whether the data exists at all. */
+const SPARSE_PROXY: Record<string, string> = {
+  new_high: "price", new_low: "price", candlestick: "price", ath_date: "ath_pct",
+  earnings_timing: "earnings_date", last_earnings_date: "earnings_date",
+};
+const COVERAGE_SKIP = new Set(["kind", "market", "symbol", "code"]);
+/**
+ * Columns computed from daily bars (every priced row can have them). All other columns come from per-ticker
+ * fundamentals / calendars that the pipeline fills gradually within its credit budget, so their coverage is measured
+ * against the rows whose fundamentals were fetched — a US universe half-way through its backfill is not "no data".
+ */
+const BAR_COLS = new Set([
+  "price", "prev_close", "open", "change_pct", "change_from_open_pct", "gap_pct", "volume", "avg_volume", "rel_volume",
+  "dollar_volume", "dollar_volume_usd", "price_usd", "perf_1w", "perf_1m", "perf_3m", "perf_6m", "perf_ytd", "perf_1y",
+  "perf_3y", "perf_5y", "sma20", "sma50", "sma200", "sma20_pct", "sma50_pct", "sma200_pct", "sma20_vs_sma50_pct",
+  "sma50_vs_sma200_pct", "sma20_cross", "sma50_cross", "sma200_cross", "sma50_200_cross", "rsi14", "atr14", "atr_pct",
+  "volatility_1w", "volatility_1m", "high_20d_pct", "low_20d_pct", "high_50d_pct", "low_50d_pct", "high_52w_pct",
+  "low_52w_pct", "new_high", "new_low", "candlestick", "ath", "ath_date", "ath_pct", "atl_pct", "price_date",
+  "in_sp500", "in_ndx", "in_dji",
+]);
+const FUND_MARKER = "fundamentals_at";
+
+/** Columns whose non-null fraction decides whether `f` is usable in a market (empty → always usable). */
+export function coverageColumns(f: FilterSpec, usd: boolean): string[] {
+  const base = f.coverageCols ?? (f.custom ? [f.custom.col] : FILTER_COLS.get(f.id) ?? []);
+  const cols = base.filter((c) => !COVERAGE_SKIP.has(c)).map((c) => SPARSE_PROXY[c] ?? c).map((c) => (usd ? USD_REMAP[c] ?? c : c));
+  return [...new Set(cols)];
+}
+
+export interface MarketCoverage {
+  /** Row counts per kind ("stock" | "etf") and overall ("all"). */
+  rows: Record<string, number>;
+  /** Non-null counts per kind then column. */
+  nonNull: Record<string, Record<string, number>>;
+}
+
+/**
+ * Availability of `f` given a market's coverage. Pure; exported for tests.
+ * Returns null when available, else the reason.
+ */
+export function coverageReason(f: FilterSpec, market: string, cov: MarketCoverage): string | null {
+  const kind = f.appliesTo === "all" ? "all" : f.appliesTo;
+  const n = cov.rows[kind] ?? 0;
+  if (!n) return (cov.rows.all ?? 0) > 0 && f.appliesTo === "etf" ? "No ETFs in this market" : null;
+  const cols = coverageColumns(f, market !== DEFAULT_MARKET);
+  if (!cols.length) return null;
+  const fundRows = cov.nonNull[kind]?.[FUND_MARKER] ?? 0;
+  const denom = (c: string) => (BAR_COLS.has(c) || c === FUND_MARKER || !fundRows ? n : fundRows);
+  // Columns computed from the same source are alternatives: the best-filled one decides.
+  const frac = Math.min(1, Math.max(...cols.map((c) => (cov.nonNull[kind]?.[c] ?? 0) / denom(c))));
+  if (frac >= MIN_COVERAGE) return null;
+  const pct = Math.round(frac * 100);
+  return f.usOnly && market !== DEFAULT_MARKET && market !== ALL_MARKETS
+    ? `US-only data (coverage ${pct}% in ${market})`
+    : `No data for this market: coverage ${pct}%`;
+}
+
 export function createScreenerEngine(db: Database, opts: ScreenerEngineOpts = {}) {
   const now = opts.now ?? (() => new Date());
   const dynCache = new Map<string, DynEntry>();
-  let coverage: { at: number; rows: number; nonNull: Map<string, number> } | null = null;
+  const covCache = new Map<string, { at: number; cov: MarketCoverage }>();
+  let marketsCache: { at: number; list: MarketInfo[] } | null = null;
 
   function presentColumns(): Set<string> {
     const rows = db.query<{ name: string }, []>(`PRAGMA table_info(${quoteIdent(METRICS_TABLE)})`).all();
     return new Set(rows.map((r) => r.name));
   }
 
-  function ctxFor(present: Set<string>): CompileCtx {
+  function ctxFor(present: Set<string>, market: string = DEFAULT_MARKET): CompileCtx {
     const d = now();
-    return { col: makeColResolver(present), today: nyToday(d), now: d };
+    return { col: makeColResolver(present), now: d, ...dateCtx(market, d) };
   }
 
-  function loadDynamic(f: FilterSpec, force = false): DynEntry {
+  // ---- markets
+
+  function derivedMarkets(): MarketInfo[] {
+    const present = presentColumns();
+    if (!present.size) return [];
+    const col = makeColResolver(present);
+    const rows = db.query<{ m: string; n: number; p: number; f: number; d: string | null; cur: string | null }, []>(
+      `SELECT ${col("market")} AS m, COUNT(*) AS n, COUNT(${col("price")}) AS p, COUNT(${col("fundamentals_at")}) AS f,
+              MAX(${col("price_date")}) AS d, MAX(${col("currency")}) AS cur
+       FROM ${quoteIdent(METRICS_TABLE)} GROUP BY 1 ORDER BY n DESC`,
+    ).all();
+    return rows.map((r) => ({
+      code: String(r.m), name: String(r.m), country: "", currency: r.cur ?? "", timezone: "", enabled: true,
+      symbols: r.n, withPrices: r.p, withFundamentals: r.f, lastPriceDate: r.d,
+    }));
+  }
+
+  function markets(): MarketInfo[] {
+    const t = Date.now();
+    if (marketsCache && t - marketsCache.at < DYNAMIC_MISS_REFRESH_MS) return marketsCache.list;
+    let list: MarketInfo[] = [];
+    try {
+      list = opts.markets?.() ?? [];
+    } catch (e) {
+      console.error("[screener] listMarkets failed", e);
+    }
+    if (!list.length) list = derivedMarkets();
+    marketsCache = { at: t, list };
+    return list;
+  }
+
+  const isKnownMarket = (code: string) => markets().some((m) => m.code === code);
+  const enabledMarkets = () => markets().filter((m) => m.enabled).map((m) => m.code);
+
+  /** WHERE fragment restricting to `market` (US/code/ALL). */
+  function marketPred(market: string, col: (n: string) => string): Pred {
+    if (market !== ALL_MARKETS) return { sql: `${col("market")} = ?`, params: [market] };
+    const codes = enabledMarkets();
+    return codes.length ? { sql: `${col("market")} IN (${codes.map(() => "?").join(", ")})`, params: codes } : { sql: "1", params: [] };
+  }
+
+  // ---- dynamic options ("*" = across all markets, used to validate/resolve query values)
+
+  function loadDynamic(f: FilterSpec, market = "*", force = false): DynEntry {
     const src = f.dynamic!;
-    const hit = dynCache.get(f.id);
+    const key = `${f.id}|${market}`;
+    const hit = dynCache.get(key);
     const t = Date.now();
     if (hit && !force && t - hit.at < DYNAMIC_TTL_MS) return hit;
     if (hit && force && t - hit.at < DYNAMIC_MISS_REFRESH_MS) return hit;
     const present = presentColumns();
     const bySlug = new Map<string, { label: string; raws: string[] }>();
+    const byLabel = new Map<string, string>();
     if (present.has(src.col)) {
+      const colRef = makeColResolver(present);
       const col = quoteIdent(src.col);
-      const kindSql = src.kind && present.has("kind") ? ` AND "kind" = ?` : "";
+      const where: Pred[] = [{ sql: `${col} IS NOT NULL AND TRIM(${col}) <> ''`, params: [] }];
+      if (src.kind && present.has("kind")) where.push({ sql: `"kind" = ?`, params: [src.kind] });
+      if (market !== "*") where.push(marketPred(market, colRef));
+      const w = and(where);
       const rows = db.query<{ v: string }, SqlParam[]>(
-        `SELECT DISTINCT ${col} AS v FROM ${quoteIdent(METRICS_TABLE)} WHERE ${col} IS NOT NULL AND TRIM(${col}) <> ''${kindSql}`,
-      ).all(...(kindSql ? [src.kind!] : []));
+        `SELECT DISTINCT ${col} AS v FROM ${quoteIdent(METRICS_TABLE)} WHERE ${w.sql}`,
+      ).all(...w.params);
       const staticValues = new Set(f.options.map((o) => o.value));
+      const names = f.id === "market" ? new Map(markets().map((m) => [m.code, m.name])) : null;
       for (const { v } of rows) {
-        const slug = slugify(String(v));
+        const rawV = String(v);
+        const slug = slugify(rawV);
         if (!slug || staticValues.has(slug)) continue;
+        const label = names ? (names.get(rawV) && names.get(rawV) !== rawV ? `${names.get(rawV)} (${rawV})` : rawV) : src.label ? src.label(rawV) : rawV;
         const e = bySlug.get(slug);
-        if (e) e.raws.push(String(v));
-        else bySlug.set(slug, { label: src.label ? src.label(String(v)) : String(v), raws: [String(v)] });
+        if (e) e.raws.push(rawV);
+        else bySlug.set(slug, { label, raws: [rawV] });
+        const ls = slugify(label);
+        if (ls && ls !== slug && !byLabel.has(ls)) byLabel.set(ls, slug);
       }
     }
-    const entry = { at: t, bySlug };
-    dynCache.set(f.id, entry);
+    const entry = { at: t, bySlug, byLabel };
+    dynCache.set(key, entry);
     return entry;
   }
 
+  /** Raw DB values for a dynamic option slug (also accepts the slug of its display label, e.g. Finviz "financial"). */
   const resolveDynamic: DynamicResolver = (f, slug) => {
+    const find = (e: DynEntry) => e.bySlug.get(slug) ?? e.bySlug.get(e.byLabel.get(slug) ?? "");
     let e = loadDynamic(f);
-    if (!e.bySlug.has(slug)) e = loadDynamic(f, true);
-    return e.bySlug.get(slug)?.raws ?? null;
+    let hit = find(e);
+    if (!hit) { e = loadDynamic(f, "*", true); hit = find(e); }
+    return hit?.raws ?? null;
   };
 
-  function dataCoverage() {
+  // ---- coverage
+
+  function marketCoverage(market: string): MarketCoverage {
     const t = Date.now();
-    if (coverage && t - coverage.at < DYNAMIC_TTL_MS) return coverage;
+    const hit = covCache.get(market);
+    if (hit && t - hit.at < DYNAMIC_TTL_MS) return hit.cov;
     const present = presentColumns();
-    const nonNull = new Map<string, number>();
-    let rows = 0;
+    const cov: MarketCoverage = { rows: {}, nonNull: {} };
     if (present.size) {
-      const cols = [...new Set([...FILTER_COLS.values()].flat())].filter((c) => present.has(c));
-      const r = db.query<Record<string, number>, []>(
-        `SELECT COUNT(*) AS __n${cols.map((c, i) => `, COUNT(${quoteIdent(c)}) AS c${i}`).join("")} FROM ${quoteIdent(METRICS_TABLE)}`,
-      ).get();
-      rows = r?.__n ?? 0;
-      cols.forEach((c, i) => nonNull.set(c, r?.[`c${i}`] ?? 0));
+      const col = makeColResolver(present);
+      const usd = market !== DEFAULT_MARKET;
+      const cols = [...new Set([FUND_MARKER, "indices", ...FILTERS.flatMap((f) => coverageColumns(f, usd))])];
+      const where = marketPred(market, col);
+      const rows = db.query<Record<string, number | string | null>, SqlParam[]>(
+        `SELECT ${col("kind")} AS __k, COUNT(*) AS __n${cols.map((c, i) => `, COUNT(${col(c)}) AS c${i}`).join("")}
+         FROM ${quoteIdent(METRICS_TABLE)} WHERE ${where.sql} GROUP BY 1`,
+      ).all(...where.params);
+      const add = (kind: string, r: Record<string, number | string | null>) => {
+        cov.rows[kind] = (cov.rows[kind] ?? 0) + Number(r.__n ?? 0);
+        const nn = (cov.nonNull[kind] ??= {});
+        cols.forEach((c, i) => { nn[c] = (nn[c] ?? 0) + Number(r[`c${i}`] ?? 0); });
+      };
+      for (const r of rows) {
+        if (r.__k === "stock" || r.__k === "etf") add(r.__k, r);
+        add("all", r);
+      }
     }
-    coverage = { at: t, rows, nonNull };
-    return coverage;
+    covCache.set(market, { at: t, cov });
+    return cov;
   }
 
-  function filterDefs(): ScreenerFilterDef[] {
-    const cov = dataCoverage();
+  function filterDefs(market: string): ScreenerFilterDef[] {
+    const cov = marketCoverage(market);
+    const intl = market !== DEFAULT_MARKET && market !== ALL_MARKETS;
     return FILTERS.map((f): ScreenerFilterDef => {
       let options: ScreenerOption[] = f.options.map(({ value, label }: OptionSpec) => ({ value, label }));
+      let available = f.available;
+      let unavailableReason = f.unavailableReason;
+      if (f.id === "idx" && market !== DEFAULT_MARKET) {
+        // S&P 500 / NASDAQ 100 / DJIA are US concepts; other markets list their own indexes (FTSE 100, DAX, OMXS30…).
+        const enabled = new Set(enabledMarkets());
+        const own = indexOptions()
+          .filter((o) => (intl ? o.market === market : enabled.has(o.market)))
+          .map(({ value, label }) => ({ value, label }));
+        options = intl ? own : [...options, ...own];
+        if (intl && !(own.length && (cov.nonNull.all?.indices ?? 0) > 0)) {
+          available = false;
+          unavailableReason = own.length
+            ? "No index membership data for this market yet"
+            : "No index membership data for this market (US indexes: S&P 500, NASDAQ 100, DJIA)";
+        }
+      }
       if (f.dynamic) {
-        const dyn = [...loadDynamic(f).bySlug.entries()]
+        const dyn = [...loadDynamic(f, market).bySlug.entries()]
           .map(([value, e]) => ({ value, label: e.label }))
           .sort((a, b) => a.label.localeCompare(b.label));
         options = [...options, ...dyn];
       }
-      let available = f.available;
-      let unavailableReason = f.unavailableReason;
-      if (available && cov.rows > 0) {
-        const cols = (FILTER_COLS.get(f.id) ?? []).filter((c) => c !== "kind");
-        if (cols.length && cols.every((c) => (cov.nonNull.get(c) ?? 0) === 0)) {
-          available = false;
-          unavailableReason = "No data collected yet (the universe pipeline has not filled these fields)";
-        }
+      if (available && f.id === "market" && market !== ALL_MARKETS) {
+        available = false;
+        unavailableReason = "Select market ALL to filter by market";
+      }
+      if (available && !(f.id === "idx" && intl)) {
+        const reason = coverageReason(f, market, cov);
+        if (reason) { available = false; unavailableReason = reason; }
       }
       if (available && f.dynamic && options.length === 0) {
         available = false;
-        unavailableReason = "No values in the universe yet";
+        unavailableReason = "No values in this market yet";
       }
       return {
-        id: f.id, label: f.label, group: f.group, options, appliesTo: f.appliesTo, available,
+        id: f.id, code: filterCode(f), label: f.label, group: f.group, options, appliesTo: f.appliesTo, available,
         ...(f.custom ? { custom: { unit: f.custom.unit } } : {}),
         ...(unavailableReason && !available ? { unavailableReason } : {}),
       };
     });
   }
 
-  return {
-    meta(universe: UniverseStatus): ScreenerMeta {
-      return { filters: filterDefs(), columns: columnDefs(), views: VIEWS, universe };
+  const engine = {
+    meta(universe: UniverseStatus, market?: string): ScreenerMeta {
+      const m = normalizeMarket(market, isKnownMarket);
+      return { markets: markets(), market: m, filters: filterDefs(m), columns: columnDefs(), views: viewsFor(m), universe };
     },
 
+    markets,
+
     normalize(body: unknown): ScreenerQuery {
-      return normalizeQuery(body, { checkDynamic: (f, slug) => resolveDynamic(f, slug) !== null });
+      return normalizeQuery(body, { checkDynamic: (f, slug) => resolveDynamic(f, slug) !== null, checkMarket: isKnownMarket });
     },
 
     run(q: ScreenerQuery): ScreenerResponse {
       const present = presentColumns();
       if (!present.size) return { total: 0, rows: [], asOf: null };
-      const built = buildQuery(q, ctxFor(present), resolveDynamic);
+      const built = buildQuery(q, ctxFor(present, q.market ?? DEFAULT_MARKET), resolveDynamic, { allMarkets: enabledMarkets() });
       const total = db.query<{ n: number }, SqlParam[]>(built.count.sql).get(...built.count.params)?.n ?? 0;
       const rows = db.query<Record<string, number | string | null>, SqlParam[]>(built.select.sql).all(...built.select.params);
-      const asOf = present.has("price_date")
-        ? db.query<{ d: string | null }, []>(`SELECT MAX("price_date") AS d FROM ${quoteIdent(METRICS_TABLE)}`).get()?.d ?? null
-        : null;
+      let asOf: string | null = null;
+      if (present.has("price_date")) {
+        const mp = marketPred(q.market ?? DEFAULT_MARKET, makeColResolver(present));
+        asOf = db.query<{ d: string | null }, SqlParam[]>(
+          `SELECT MAX("price_date") AS d FROM ${quoteIdent(METRICS_TABLE)} WHERE ${mp.sql}`,
+        ).get(...mp.params)?.d ?? null;
+      }
       return { total, rows, asOf };
     },
 
     query(body: unknown): ScreenerResponse {
-      return this.run(this.normalize(body));
+      return engine.run(engine.normalize(body));
     },
 
-    /** Drop cached DISTINCT options / coverage (tests, after a pipeline run). */
+    /** Drop cached DISTINCT options / coverage / markets (tests, after a pipeline run). */
     invalidate(): void {
       dynCache.clear();
-      coverage = null;
+      covCache.clear();
+      marketsCache = null;
     },
   };
+  return engine;
 }
 export type ScreenerEngine = ReturnType<typeof createScreenerEngine>;

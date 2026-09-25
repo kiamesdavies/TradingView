@@ -1,14 +1,18 @@
-// The universe scheduler: one loop, one job at a time. Every ~60s (or immediately after a job that has more
-// work) it picks the first due job in priority order. Long jobs (backfill, fundamentals) work in slices so the
-// daily price update and metric refreshes interleave. Budget exhaustion pauses a job until midnight UTC.
+// The universe scheduler: one loop, one job slice at a time. Every ~60s (or immediately after a slice that has
+// more work) it picks the first due job instance in priority order. Market-scoped jobs run as one instance per
+// enabled market ("prices:ST"), each on its own market's calendar (prices ~2.5 h after that market's close).
+// Long jobs (backfill, fundamentals) work in slices so daily price updates and metric refreshes interleave.
+// Budget exhaustion pauses an instance until midnight UTC.
 import type { Database } from "bun:sqlite";
-import type { UniverseJobStatus, UniverseStatus } from "@eodview/shared";
-import { nyParts, nyWallToUtc } from "./calendar";
+import type { MarketInfo, UniverseJobStatus, UniverseStatus } from "@eodview/shared";
 import { BudgetExhausted, CreditGuard, type AccountUsage } from "./credits";
 import {
+  backfillPlan,
+  DEFAULT_LOW_PRIORITY_RESERVE,
   fundamentalsQueue,
+  fxMissing,
   JOB_NAMES,
-  missingSessions,
+  MARKET_JOBS,
   pricesNextRun,
   RUNNERS,
   type Api,
@@ -16,9 +20,11 @@ import {
   type JobName,
   type JobResult,
 } from "./jobs";
+import { getMarket, MARKETS, type MarketDef } from "./markets";
+import { Limiter, type RetryOptions } from "./ratelimit";
 import { initUniverseSchema, kvGet } from "./schema";
-import { countActive, hasDirty, holidays, latestDate, markAllDirty, MIN_ROWS_PER_DATE } from "./store";
-import { addDays } from "./util";
+import { countActive, hasDirty, holidays, latestDate, latestDateAny, markAllDirty, sessionCount } from "./store";
+import { utcDate } from "./util";
 
 export interface PipelineDeps {
   db: Database;
@@ -28,8 +34,18 @@ export interface PipelineDeps {
   externallyRefreshed?(limit: number): Array<{ symbol: string; data: Record<string, any>; fetchedAt: number }>;
   getKey(): string | null;
   onKeyChange?(cb: (key: string | null) => void): () => void;
+  /** Enabled market codes (re-read every loop so a settings change applies without a restart). Default ["US"]. */
+  markets?: () => string[];
   now?: () => number;
-  historyDays?: number;
+  historyYears?: number;
+  backfillMaxSymbols?: number | null;
+  fundamentalsMaxPerRun?: number;
+  /** Credits backfill/fundamentals leave unused for the daily jobs (default 3000). */
+  lowPriorityReserve?: number;
+  bulkActionMarkets?: string[];
+  ratePerMin?: number;
+  concurrency?: number;
+  retry?: RetryOptions;
   dailyBudget?: number;
   creditReserve?: number;
   tickMs?: number;
@@ -46,22 +62,44 @@ interface JobRow {
   next_mode: "override" | "notBefore" | null;
 }
 
+/** One schedulable unit: a global job or a market-scoped job for one market. */
+export interface JobInstance { key: string; job: JobName; market: MarketDef | null }
+
 const HOUR = 3600_000;
 const DAY = 24 * HOUR;
 const sec = (ms: number | null) => (ms === null ? null : Math.floor(ms / 1000));
 
+/** Instances in priority order for the enabled markets. */
+export function jobInstances(markets: MarketDef[]): JobInstance[] {
+  const out: JobInstance[] = [];
+  for (const job of JOB_NAMES) {
+    if (MARKET_JOBS.has(job)) for (const m of markets) out.push({ key: `${job}:${m.code}`, job, market: m });
+    else out.push({ key: job, job, market: null });
+  }
+  return out;
+}
+
+/** "prices" → every enabled instance of the job; "prices:ST" → that one. Unknown → []. */
+export function resolveJobName(name: string, markets: MarketDef[]): JobInstance[] {
+  const [job, mk] = name.split(":") as [string, string | undefined];
+  if (!(JOB_NAMES as string[]).includes(job)) return [];
+  const all = jobInstances(markets).filter((i) => i.job === job);
+  if (mk === undefined) return all;
+  return all.filter((i) => i.market?.code === mk.toUpperCase());
+}
+
 export class UniversePipeline {
   readonly db: Database;
   readonly credits: CreditGuard;
+  readonly limiter: Limiter;
   private deps: PipelineDeps;
   private now: () => number;
-  private historyDays: number;
   private tickMs: number;
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private running: JobName | null = null;
-  private manual: JobName[] = [];
+  private running: string | null = null;
+  private manual: string[] = [];
   private started = false;
-  private errorStreak = new Map<JobName, number>();
+  private errorStreak = new Map<string, number>();
   private log: (msg: string) => void;
   private unsubscribeKey: (() => void) | null = null;
 
@@ -69,7 +107,6 @@ export class UniversePipeline {
     this.deps = deps;
     this.db = deps.db;
     this.now = deps.now ?? Date.now;
-    this.historyDays = Math.max(1, deps.historyDays ?? 300);
     this.tickMs = deps.tickMs ?? 60_000;
     this.log = deps.log ?? ((m) => console.log(`[universe] ${m}`));
     initUniverseSchema(this.db);
@@ -79,8 +116,23 @@ export class UniversePipeline {
       getUsage: deps.getUsage,
       now: this.now,
     });
-    const ins = this.db.query("INSERT OR IGNORE INTO universe_jobs (name) VALUES (?)");
-    for (const j of JOB_NAMES) ins.run(j);
+    this.limiter = new Limiter({ ratePerMin: deps.ratePerMin ?? 800, concurrency: deps.concurrency ?? 8 });
+  }
+
+  /** Enabled markets (registry order). */
+  markets(): MarketDef[] {
+    const codes = this.deps.markets?.() ?? ["US"];
+    const out = MARKETS.filter((m) => codes.includes(m.code));
+    return out.length ? out : [MARKETS[0]!];
+  }
+
+  /** Markets whose splits/dividends come from EODHD's bulk lists (EODVIEW_ACTIONS_BULK_MARKETS, default US). */
+  bulkActionMarkets(): ReadonlySet<string> {
+    return new Set(this.deps.bulkActionMarkets ?? ["US"]);
+  }
+
+  instances(): JobInstance[] {
+    return jobInstances(this.markets());
   }
 
   start(): void {
@@ -104,16 +156,19 @@ export class UniversePipeline {
     this.unsubscribeKey?.();
   }
 
-  /** Manual trigger: queue the job and return; it runs in the background as soon as the loop is free. */
-  runJob(name: JobName): void {
-    if (!JOB_NAMES.includes(name)) throw new Error(`unknown job ${name}`);
-    if (name === "metrics") markAllDirty(this.db);
+  /** Manual trigger ("prices" = all enabled markets, or "prices:ST"): queued; runs in the background. */
+  runJob(name: string): void {
+    const inst = resolveJobName(name, this.markets());
+    if (!inst.length) throw new Error(`unknown job ${name}`);
+    if (inst.some((i) => i.job === "metrics")) markAllDirty(this.db);
     if (!this.started) {
-      // Loop not running (EODVIEW_UNIVERSE=off): run just this job once, in the background.
-      void this.execute(name);
+      // Loop not running (EODVIEW_UNIVERSE=off): run the instances once, in the background.
+      void (async () => {
+        for (const i of inst) await this.execute(i.key);
+      })();
       return;
     }
-    if (!this.manual.includes(name)) this.manual.push(name);
+    for (const i of inst) if (!this.manual.includes(i.key)) this.manual.push(i.key);
     this.kick();
   }
 
@@ -134,9 +189,9 @@ export class UniversePipeline {
     let next = this.tickMs;
     try {
       if (this.deps.getKey()) {
-        const job = this.pickJob();
-        if (job) {
-          const r = await this.execute(job);
+        const key = this.pickJob();
+        if (key) {
+          const r = await this.execute(key);
           if (r !== "idle") next = 50; // look for more work right away
         }
       }
@@ -146,96 +201,118 @@ export class UniversePipeline {
     this.schedule(next);
   }
 
-  private row(name: JobName): JobRow {
+  private row(key: string): JobRow {
     return (
-      this.db.query<JobRow, [string]>("SELECT * FROM universe_jobs WHERE name = ?").get(name) ?? {
-        name, last_run_at: null, last_success_at: null, last_error: null, progress: null, next_run_at: null, next_mode: null,
+      this.db.query<JobRow, [string]>("SELECT * FROM universe_jobs WHERE name = ?").get(key) ?? {
+        name: key, last_run_at: null, last_success_at: null, last_error: null, progress: null, next_run_at: null, next_mode: null,
       }
     );
   }
 
+  private instance(key: string): JobInstance | null {
+    const [job, mk] = key.split(":") as [JobName, string | undefined];
+    if (!(JOB_NAMES as string[]).includes(job)) return null;
+    if (MARKET_JOBS.has(job)) {
+      const m = mk ? getMarket(mk) : undefined;
+      return m ? { key, job, market: m } : null;
+    }
+    return { key, job, market: null };
+  }
+
   /** Natural next run (ms) from the data itself; null = nothing to do. */
-  computedNext(name: JobName): number | null {
+  computedNext(key: string): number | null {
+    const inst = this.instance(key);
+    if (!inst) return null;
     const now = this.now();
-    const r = this.row(name);
+    const r = this.row(key);
     const lastOk = r.last_success_at === null ? null : r.last_success_at * 1000;
-    if (name !== "symbols" && countActive(this.db) === 0) return null;
-    switch (name) {
-      case "symbols":
-        return lastOk === null ? now : lastOk + 7 * DAY;
+    const m = inst.market;
+    const markets = this.markets();
+    if (inst.job === "symbols") return lastOk === null ? now : lastOk + 7 * DAY;
+    if (m ? countActive(this.db, m.code) === 0 : countActive(this.db) === 0) return null;
+    switch (inst.job) {
       case "prices": {
-        const lastAttempt = Number(kvGet(this.db, "prices_last_attempt") ?? 0) || null;
-        return pricesNextRun(now, latestDate(this.db), holidays(this.db), lastAttempt);
+        const lastAttempt = Number(kvGet(this.db, `prices_last_attempt:${m!.code}`) ?? 0) || null;
+        return pricesNextRun(now, latestDate(this.db, m!.code), holidays(this.db, m!.code), lastAttempt, m!);
       }
+      case "fx":
+        if (fxMissing(this.db, markets)) return lastOk !== null && now - lastOk < HOUR ? lastOk + HOUR : now;
+        return lastOk === null ? now : lastOk + 20 * HOUR;
       case "earnings": {
         if (lastOk === null) return now;
-        const today = nyParts(now).date;
-        return nyParts(lastOk).date !== today ? now : nyWallToUtc(addDays(today, 1), 0, 10);
+        const today = utcDate(now);
+        return utcDate(lastOk) !== today ? now : Date.parse(`${today}T00:10:00Z`) + DAY;
       }
       case "indices":
+        if (!m!.indices.length) return null;
         return lastOk === null ? now : lastOk + 7 * DAY;
       case "news":
         return lastOk === null ? now : lastOk + 2 * HOUR;
       case "metrics":
         return hasDirty(this.db) ? now : null;
-      case "backfill": {
-        const latest = latestDate(this.db);
-        if (!latest) return null;
-        return missingSessions(this.db, latest, this.historyDays).length ? now : null;
-      }
+      case "backfill":
+        return backfillPlan(
+          { db: this.db, now: this.now, backfillMaxSymbols: this.deps.backfillMaxSymbols ?? null, bulkActionMarkets: this.bulkActionMarkets() },
+          m!.code, 1,
+        ).todo.length ? now : null;
       case "fundamentals": {
-        if (!latestDate(this.db)) return null;
+        if (!latestDateAny(this.db, markets.map((x) => x.code))) return null;
         const pending =
-          fundamentalsQueue(this.db, now, nyParts(now).date, 1).length > 0 || (this.deps.externallyRefreshed?.(1).length ?? 0) > 0;
+          fundamentalsQueue(this.db, now, utcDate(now), 1, markets.map((x) => x.code)).length > 0 || (this.deps.externallyRefreshed?.(1).length ?? 0) > 0;
         return pending ? now : now + HOUR;
       }
+      default:
+        return null;
     }
   }
 
   /** Effective next run combining the data-driven time with explicit schedules / back-offs. */
-  nextRun(name: JobName): number | null {
-    const r = this.row(name);
+  nextRun(key: string): number | null {
+    const r = this.row(key);
     const stored = r.next_run_at === null ? null : r.next_run_at * 1000;
     if (stored !== null && r.next_mode === "override") return stored;
-    const computed = this.computedNext(name);
+    const computed = this.computedNext(key);
     if (stored !== null && r.next_mode === "notBefore") return computed === null ? null : Math.max(computed, stored);
     return computed;
   }
 
-  /** Run due jobs back to back until nothing is due (tests / one-shot use). Returns the jobs run. */
-  async runPending(maxSlices = 100): Promise<JobName[]> {
-    const ran: JobName[] = [];
+  /** Run due jobs back to back until nothing is due (tests / one-shot use). Returns the instances run. */
+  async runPending(maxSlices = 100): Promise<string[]> {
+    const ran: string[] = [];
     for (let i = 0; i < maxSlices; i++) {
       if (!this.deps.getKey()) break;
-      const job = this.pickJob();
-      if (!job) break;
-      ran.push(job);
-      if ((await this.execute(job)) !== "ok") break;
+      const key = this.pickJob();
+      if (!key) break;
+      ran.push(key);
+      if ((await this.execute(key)) !== "ok") break;
     }
     return ran;
   }
 
-  private pickJob(): JobName | null {
+  private pickJob(): string | null {
     if (this.manual.length) return this.manual.shift()!;
-    for (const name of JOB_NAMES) {
-      const at = this.nextRun(name);
+    for (const inst of this.instances()) {
+      const at = this.nextRun(inst.key);
       // Read the clock after nextRun(): "due now" is computed from a later now() call, so comparing with a
       // timestamp taken before it made every data-driven job look a few ms in the future and never run.
-      if (at !== null && at <= this.now()) return name;
+      if (at !== null && at <= this.now()) return inst.key;
     }
     return null;
   }
 
-  private setRow(name: JobName, patch: Partial<Omit<JobRow, "name">>): void {
+  private setRow(key: string, patch: Partial<Omit<JobRow, "name">>): void {
     const keys = Object.keys(patch) as (keyof typeof patch)[];
     if (!keys.length) return;
+    this.db.query("INSERT OR IGNORE INTO universe_jobs (name) VALUES (?)").run(key);
     this.db
       .query(`UPDATE universe_jobs SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE name = ?`)
-      .run(...(keys.map((k) => patch[k] ?? null) as (string | number | null)[]), name);
+      .run(...(keys.map((k) => patch[k] ?? null) as (string | number | null)[]), key);
   }
 
-  /** Job context bound to this pipeline (also used by one-off scripts). */
-  context(name: JobName): JobCtx {
+  /** Job context bound to this pipeline (also used by one-off scripts). `key` is "prices:ST", "fx", ... */
+  context(key: string): JobCtx {
+    const inst = this.instance(key);
+    if (!inst) throw new Error(`unknown job instance ${key}`);
     return {
       db: this.db,
       api: this.deps.api,
@@ -243,78 +320,113 @@ export class UniversePipeline {
       refreshFundamentals: this.deps.refreshFundamentals,
       externallyRefreshed: this.deps.externallyRefreshed,
       now: this.now,
-      historyDays: this.historyDays,
-      progress: (text) => this.setRow(name, { progress: text }),
+      markets: this.markets(),
+      market: inst.market,
+      historyYears: this.deps.historyYears ?? 5,
+      backfillMaxSymbols: this.deps.backfillMaxSymbols ?? null,
+      fundamentalsMaxPerRun: this.deps.fundamentalsMaxPerRun ?? 500,
+      lowPriorityReserve: this.deps.lowPriorityReserve ?? DEFAULT_LOW_PRIORITY_RESERVE,
+      bulkActionMarkets: this.bulkActionMarkets(),
+      limiter: this.limiter,
+      retry: this.deps.retry,
+      progress: (text) => this.setRow(key, { progress: text }),
       yieldNow: () => Bun.sleep(0),
-      job: name,
+      job: inst.job,
+      jobKey: key,
     };
   }
 
-  /** Run one slice of a job. Returns "idle" when nothing was done. */
-  async execute(name: JobName): Promise<"ok" | "paused" | "error" | "idle"> {
+  /** Run one slice of a job instance. Returns "idle" when nothing was done. */
+  async execute(key: string): Promise<"ok" | "paused" | "error" | "idle"> {
     if (this.running) return "idle";
-    this.running = name;
+    const inst = this.instance(key);
+    if (!inst) return "idle";
+    this.running = key;
     const started = this.now();
-    this.setRow(name, { last_run_at: sec(started), progress: "starting" });
-    const ctx = this.context(name);
+    this.setRow(key, { last_run_at: sec(started), progress: "starting" });
     try {
-      const res: JobResult = await RUNNERS[name](ctx);
-      this.errorStreak.delete(name);
-      this.setRow(name, {
+      const res: JobResult = await RUNNERS[inst.job](this.context(key));
+      this.errorStreak.delete(key);
+      this.setRow(key, {
         last_success_at: sec(this.now()),
         last_error: null,
         progress: res.note ?? null,
         next_run_at: res.nextRunAt === undefined || res.nextRunAt === null ? null : sec(res.nextRunAt),
         next_mode: res.nextRunAt === undefined || res.nextRunAt === null ? null : "override",
       });
-      if (res.note) this.log(`${name}: ${res.note} (${((this.now() - started) / 1000).toFixed(1)}s)`);
+      if (res.note) this.log(`${key}: ${res.note} (${((this.now() - started) / 1000).toFixed(1)}s)`);
       return "ok";
     } catch (e) {
       if (e instanceof BudgetExhausted) {
         const at = new Date(e.resumesAt).toISOString().slice(0, 16).replace("T", " ");
-        const prev = this.row(name).progress;
-        this.setRow(name, {
+        const prev = this.row(key).progress;
+        this.setRow(key, {
           progress: `budget exhausted, resumes ${at} UTC${prev && !prev.startsWith("budget") ? ` (${prev})` : ""}`,
           last_error: null,
           next_run_at: sec(e.resumesAt),
           next_mode: "notBefore",
         });
-        this.log(`${name}: paused — ${e.message}`);
+        this.log(`${key}: paused — ${e.message}`);
         return "paused";
       }
-      const streak = (this.errorStreak.get(name) ?? 0) + 1;
-      this.errorStreak.set(name, streak);
+      const streak = (this.errorStreak.get(key) ?? 0) + 1;
+      this.errorStreak.set(key, streak);
       const backoff = Math.min(HOUR, 5 * 60_000 * 2 ** (streak - 1));
-      this.setRow(name, {
+      this.setRow(key, {
         last_error: (e as Error)?.message ?? String(e),
         next_run_at: sec(this.now() + backoff),
         next_mode: "notBefore",
       });
-      this.log(`${name} failed: ${(e as Error)?.message ?? e}`);
+      this.log(`${key} failed: ${(e as Error)?.message ?? e}`);
       return "error";
     } finally {
       this.running = null;
     }
   }
 
-  status(): UniverseStatus {
+  /** Per-market summary for every registry market (enabled flag from the current setting). */
+  listMarkets(): MarketInfo[] {
+    const db = this.db;
+    const enabled = new Set(this.markets().map((m) => m.code));
+    const group = (sql: string) => new Map(db.query<{ market: string; n: number }, []>(sql).all().map((r) => [r.market, r.n]));
+    const symbols = group("SELECT market, COUNT(*) AS n FROM universe_symbols WHERE active = 1 GROUP BY market");
+    const withPrices = group("SELECT market, COUNT(*) AS n FROM universe_metrics WHERE price IS NOT NULL GROUP BY market");
+    const withFund = group(
+      "SELECT s.market, COUNT(*) AS n FROM universe_fund f JOIN universe_symbols s ON s.symbol = f.symbol WHERE s.active = 1 AND f.data IS NOT NULL GROUP BY s.market",
+    );
+    return MARKETS.map((m) => ({
+      code: m.code,
+      name: m.name,
+      country: m.country,
+      currency: m.currency,
+      timezone: m.timezone,
+      enabled: enabled.has(m.code),
+      symbols: symbols.get(m.code) ?? 0,
+      withPrices: withPrices.get(m.code) ?? 0,
+      withFundamentals: withFund.get(m.code) ?? 0,
+      lastPriceDate: latestDate(db, m.code),
+    }));
+  }
+
+  status(): UniverseStatus & { markets: Array<MarketInfo & { historyDays: number; histories: number; creditsToday: number }> } {
     const hasKey = !!this.deps.getKey();
     const db = this.db;
-    const one = (sql: string) => db.query<{ n: number | null }, []>(sql).get()?.n ?? 0;
-    const jobs: UniverseJobStatus[] = JOB_NAMES.map((name) => {
-      const r = this.row(name);
+    const markets = this.markets();
+    const codes = markets.map((m) => m.code);
+    const jobs: UniverseJobStatus[] = this.instances().map((inst) => {
+      const r = this.row(inst.key);
       let state: UniverseJobStatus["state"] = "idle";
       if (!hasKey) state = "disabled";
-      else if (this.running === name) state = "running";
+      else if (this.running === inst.key) state = "running";
       else if (r.last_error) state = "error";
       let nextRunAt: number | null = null;
       try {
-        nextRunAt = hasKey ? sec(this.nextRun(name)) : null;
+        nextRunAt = hasKey ? sec(this.nextRun(inst.key)) : null;
       } catch {
         nextRunAt = null;
       }
       return {
-        name,
+        name: inst.key,
         state,
         lastRunAt: r.last_run_at,
         lastError: r.last_error,
@@ -322,17 +434,27 @@ export class UniversePipeline {
         nextRunAt,
       };
     });
+    const byMarket = this.credits.byMarketToday();
+    const histories = new Map(
+      db.query<{ market: string; n: number }, []>("SELECT market, COUNT(*) AS n FROM universe_long WHERE status IN ('ok', 'stale') GROUP BY market").all().map((r) => [r.market, r.n]),
+    );
+    const info = this.listMarkets().filter((m) => m.enabled);
+    const perMarket = info.map((m) => ({
+      ...m,
+      historyDays: sessionCount(db, m.code),
+      histories: histories.get(m.code) ?? 0,
+      creditsToday: byMarket[m.code] ?? 0,
+    }));
     return {
-      symbols: countActive(db),
-      withPrices: one("SELECT COUNT(*) AS n FROM universe_metrics WHERE price IS NOT NULL"),
-      withFundamentals: one(
-        "SELECT COUNT(*) AS n FROM universe_fund f JOIN universe_symbols s ON s.symbol = f.symbol WHERE s.active = 1 AND f.data IS NOT NULL",
-      ),
-      lastPriceDate: latestDate(db),
-      historyDays: db.query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM universe_dates WHERE rows >= ?").get(MIN_ROWS_PER_DATE)?.n ?? 0,
+      symbols: info.reduce((s, m) => s + m.symbols, 0),
+      withPrices: info.reduce((s, m) => s + m.withPrices, 0),
+      withFundamentals: info.reduce((s, m) => s + m.withFundamentals, 0),
+      lastPriceDate: latestDateAny(db, codes),
+      historyDays: perMarket.reduce((s, m) => Math.max(s, m.historyDays), 0),
       creditsUsedToday: this.credits.usedToday(),
       dailyCreditBudget: this.credits.budget,
       jobs,
+      markets: perMarket,
     };
   }
 }

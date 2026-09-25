@@ -2,6 +2,7 @@
 // Values arrive as numbers, numeric strings, "NA" or null; everything is parsed defensively (see derive.test.ts).
 // Price-dependent ratios (P/E, P/S, market cap, yield, target upside…) are recomputed daily from the stored
 // inputs via priceDependent(), so they track the latest close instead of the fetch-day price.
+import { majorOf } from "./fx";
 import { addDays, cagr, daysBetween, div, isoDate, num, pctChange, pos, str, times100, values } from "./util";
 
 type Raw = Record<string, any>;
@@ -398,7 +399,8 @@ function reportingCurrencyDiffers(raw: Raw, trading: string | number | null): bo
     hist.sort((a, b) => (String(a?.date ?? "") < String(b?.date ?? "") ? 1 : -1));
     rep = str(hist[0]?.currency);
   }
-  return !!rep && rep.toUpperCase() !== trading.toUpperCase();
+  // Pence-quoted LSE stocks (GBX) report in GBP: same currency, different unit (handled by priceDependent's factor).
+  return !!rep && majorOf(rep).currency !== majorOf(trading).currency;
 }
 
 function sumPos(a: unknown, b: unknown): number | null {
@@ -419,9 +421,14 @@ function dominantAssetClass(alloc: unknown): string | null {
   return best;
 }
 
-/** Ratios that move with the price. `price` null → fetch-time fallbacks. */
-export function priceDependent(inp: FundInputs, price: number | null): Row {
-  const p = price !== null && price > 0 ? price : null;
+/**
+ * Ratios that move with the price. `price` null → fetch-time fallbacks. `unitFactor` converts the quote price
+ * into the major currency unit the per-share fundamentals use (0.01 for GBX/pence), so market_cap is in the
+ * major unit; the analyst target is quoted like the price and is compared unconverted.
+ */
+export function priceDependent(inp: FundInputs, price: number | null, unitFactor = 1): Row {
+  const quote = price !== null && price > 0 ? price : null;
+  const p = quote === null ? null : quote * unitFactor;
   const mcap = p && inp.sharesOutstanding ? p * inp.sharesOutstanding : inp.marketCapFallback;
   const out: Row = {};
   out.market_cap = mcap;
@@ -433,6 +440,6 @@ export function priceDependent(inp: FundInputs, price: number | null): Row {
   out.pfcf = mcap && inp.fcfTtm !== null && inp.fcfTtm > 0 ? mcap / inp.fcfTtm : null;
   out.dividend_yield =
     p && inp.divRate !== null && inp.divRate > 0 ? (inp.divRate / p) * 100 : inp.divYieldFallback ?? (inp.divRate === 0 ? 0 : null);
-  out.target_upside_pct = p && inp.targetPrice ? (inp.targetPrice / p - 1) * 100 : null;
+  out.target_upside_pct = quote && inp.targetPrice ? (inp.targetPrice / quote - 1) * 100 : null;
   return out;
 }

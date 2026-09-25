@@ -2,10 +2,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ScreenerColumnDef, ScreenerView } from "@eodview/shared";
 import { useShell } from "../components/shellStore";
+import { ApiCopyButtons } from "./ApiCopy";
 import { ChartsGrid } from "./ChartsGrid";
 import { buildCsv, collectRows, csvFilename } from "./csv";
 import { FilterChips, FilterPanel } from "./FilterPanel";
 import { isUniverseBuilding } from "./format";
+import { ignoredFilters, ignoredNotice, marketCurrency, marketName, resolveMarket, showsLocalCurrency } from "./markets";
+import { MarketSelect } from "./MarketSelect";
 import { Pagination } from "./Pagination";
 import { PresetBar } from "./PresetBar";
 import { activeCounts, CHARTS_QUERY_VIEW, CHARTS_VIEW, filterKey, toQuery, totalPages, type ScreenerUniverse } from "./queryState";
@@ -74,13 +77,37 @@ export function ScreenerPage() {
   const [refresh, setRefresh] = useState(0);
   const [exporting, setExporting] = useState<string | null>(null);
 
-  // ---- meta + presets
+  // ---- meta (per market: filter availability depends on the market's data coverage)
+  const market = q.market;
   useEffect(() => {
     let alive = true;
     screenerApi
-      .meta()
-      .then((m) => alive && useScreener.getState().setData({ meta: m, metaError: null }))
-      .catch((e) => alive && useScreener.getState().setData({ metaError: errorMessage(e), noKey: isNoKeyError(e) }));
+      .meta(market)
+      .then((m) => {
+        if (!alive) return;
+        const set = useScreener.getState().setData;
+        set({ meta: m, metaMarket: market, metaError: null });
+        // stored market unknown / disabled on this server -> fall back (re-fetches meta for the resolved market)
+        const resolved = resolveMarket(market, Array.isArray(m.markets) ? m.markets : undefined);
+        if (resolved !== market) useScreener.getState().setMarket(resolved);
+      })
+      .catch((e) => {
+        if (!alive) return;
+        const s = useScreener.getState();
+        // a failed market switch keeps the previous meta usable
+        if (s.meta) {
+          s.setData({ metaMarket: market });
+          useShell.getState().pushToast({ kind: "error", title: "Couldn't load market filters", body: errorMessage(e) }, 6000);
+        } else s.setData({ metaError: errorMessage(e), noKey: isNoKeyError(e) });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [metaTry, market]);
+
+  // ---- presets
+  useEffect(() => {
+    let alive = true;
     screenerApi
       .presets()
       .then((p) => alive && useScreener.getState().setData({ presets: Array.isArray(p) ? p : [] }))
@@ -89,6 +116,8 @@ export function ScreenerPage() {
       alive = false;
     };
   }, [metaTry]);
+  const metaMarket = useScreener((s) => s.metaMarket);
+  const metaReady = !!meta && metaMarket === market;
 
   // ---- views
   const views = useMemo<ScreenerView[]>(() => {
@@ -113,11 +142,12 @@ export function ScreenerPage() {
 
   // ---- query (filter edits debounced 300ms; paging/sort/view immediate)
   const fk = filterKey(q);
-  const queryJson = JSON.stringify(toQuery(q));
+  // unavailable filters for this market are kept in state but not sent
+  const queryJson = JSON.stringify(toQuery(q, {}, meta?.filters));
   const lastFk = useRef<string | null>(null);
   const seq = useRef(0);
   useEffect(() => {
-    if (!meta) return;
+    if (!metaReady) return;
     const delay = lastFk.current !== null && lastFk.current !== fk ? 300 : 0;
     lastFk.current = fk;
     const id = ++seq.current;
@@ -141,7 +171,7 @@ export function ScreenerPage() {
         });
     }, delay);
     return () => clearTimeout(t);
-  }, [queryJson, fk, meta, refresh]);
+  }, [queryJson, fk, metaReady, refresh]);
 
   // ---- universe status polling while the pipeline is building
   // also poll while the universe is still empty (the pipeline may start later, e.g. after a key is added)
@@ -176,7 +206,7 @@ export function ScreenerPage() {
     setExporting("Exporting…");
     try {
       const { rows, truncated, total } = await collectRows(
-        (offset, limit) => screenerApi.query(toQuery(s, { offset, limit })),
+        (offset, limit) => screenerApi.query(toQuery(s, { offset, limit }, useScreener.getState().meta?.filters)),
         { onProgress: (done, target) => setExporting(`Exporting ${done.toLocaleString("en-US")}/${target.toLocaleString("en-US")}…`) },
       );
       download(buildCsv(cols, rows), csvFilename(new Date(), s.view === CHARTS_VIEW ? CHARTS_QUERY_VIEW : s.view));
@@ -191,6 +221,9 @@ export function ScreenerPage() {
   };
 
   const counts = useMemo(() => activeCounts(q.filters, meta?.filters ?? []), [q.filters, meta]);
+  const ignored = useMemo(() => (metaReady ? ignoredFilters(q.filters, meta?.filters) : []), [q.filters, meta, metaReady]);
+  const ignoredText = ignoredNotice(ignored.length, marketName(meta?.markets, market));
+  const currency = showsLocalCurrency(market) ? { show: true, fallback: marketCurrency(meta?.markets, market) ?? null } : null;
   const onSort = useCallback(
     (c: ScreenerColumnDef) => useScreener.getState().toggleSort(c.id, c.align === "right" && c.format !== "text" ? "desc" : "asc"),
     [],
@@ -244,6 +277,7 @@ export function ScreenerPage() {
           Filters{counts.all > 0 && <span className="scr-count">{counts.all}</span>}
           <span className="scr-caret" aria-hidden="true">▾</span>
         </button>
+        <MarketSelect />
         <div className="scr-seg" role="radiogroup" aria-label="Universe">
           {UNIVERSES.map((u) => (
             <button
@@ -266,6 +300,12 @@ export function ScreenerPage() {
 
       {q.filtersOpen && <FilterPanel />}
       <FilterChips />
+      {ignoredText && (
+        <div className="scr-ignored" role="status" title={ignored.map((f) => `${f.label}: ${f.reason}`).join("\n")}>
+          <span aria-hidden="true">⚠</span> {ignoredText}: {ignored.map((f) => f.label).join(", ")}
+          <span className="muted"> — no data for this market; kept for other markets.</span>
+        </div>
+      )}
 
       {noKeyBanner}
       <BuildBanner universe={meta.universe} />
@@ -295,6 +335,8 @@ export function ScreenerPage() {
             </button>
           ))}
         </div>
+        <span className="scr-grow" />
+        <ApiCopyButtons />
         <button type="button" className="btn scr-btn-sm" onClick={exportCsv} disabled={!!exporting || !total} title="Download the current results as CSV (up to 5,000 rows)">
           {exporting ?? "Export CSV"}
         </button>
@@ -322,7 +364,7 @@ export function ScreenerPage() {
       ) : q.view === CHARTS_VIEW ? (
         <ChartsGrid rows={rows} loading={loading} />
       ) : (
-        <ResultsTable columns={columns} rows={rows} offset={result.offset} sort={q.sort} onSort={onSort} loading={loading} />
+        <ResultsTable columns={columns} rows={rows} offset={result.offset} sort={q.sort} onSort={onSort} loading={loading} currency={currency} />
       )}
 
       {result && result.total > 0 && (

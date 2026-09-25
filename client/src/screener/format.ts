@@ -29,7 +29,7 @@ function fixed(v: number, d = 2): string {
 
 /** Columns whose values are a per-share price (never compacted). */
 function isPriceLike(id: string): boolean {
-  return /(^|_)(price|open|prev_close|sma\d+|target_price|atr14|eps_ttm|high|low)$/.test(id) || id === "price";
+  return /(^|_)(price|open|prev_close|sma\d+|target_price|atr14|eps_ttm|high|low|ath|atl)$/.test(id) || id === "price";
 }
 
 /** Percent columns coloured green/red (Finviz colours change and performance). */
@@ -78,8 +78,33 @@ export function formatValue(value: CellValue, format: StatFormat, columnId = "")
   }
 }
 
-export function formatCell(value: CellValue, col: Pick<ScreenerColumnDef, "id" | "format">): string {
-  return formatValue(value, col.format, col.id);
+/** v3 USD-normalised columns ("market_cap_usd", "dollar_volume_usd", "price_usd"). */
+export function isUsdColumn(id: string): boolean {
+  return /_usd$/.test(id);
+}
+
+export interface CurrencyCtx {
+  /** Listing currency of this row (row.currency, else the selected market's). Shown after local money values. */
+  currency?: string | null;
+}
+
+/**
+ * Display text of a cell. Money columns: USD columns get a "$" prefix ("$1.23B", "-$5.00"); local money values get the
+ * currency code appended ("123.40 SEK") when `ctx.currency` is set (non-US / all-markets screens).
+ */
+export function formatCell(value: CellValue, col: Pick<ScreenerColumnDef, "id" | "format">, ctx?: CurrencyCtx): string {
+  const text = formatValue(value, col.format, col.id);
+  if (col.format !== "money" || text === NA || toNumber(value) === null) return text;
+  if (isUsdColumn(col.id)) return text.startsWith("-") ? `-$${text.slice(1)}` : `$${text}`;
+  const ccy = ctx?.currency?.trim();
+  return ccy ? `${text} ${ccy}` : text;
+}
+
+/** Currency of one result row for display: the row's own `currency` field, else the market's. */
+export function rowCurrency(row: Record<string, unknown>, fallback: string | null | undefined): string | undefined {
+  const c = row.currency;
+  if (typeof c === "string" && /^[A-Za-z]{3}$/.test(c.trim())) return c.trim().toUpperCase();
+  return fallback || undefined;
 }
 
 /** CSS tone for a cell: "up" / "down" for signed change/performance columns, "" otherwise. */
