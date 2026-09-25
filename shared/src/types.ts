@@ -298,6 +298,8 @@ export interface ScreenerOption {
 
 export interface ScreenerFilterDef {
   id: string;                // "pe", "sma50", "sector", ...
+  /** v3: Finviz URL prefix for this filter (e.g. "fa_pe", "cap", "ta_sma50"); option code = `${code}_${option.value}`. */
+  code?: string;
   label: string;             // "P/E", "50-Day Simple Moving Average"
   group: ScreenerGroup;
   options: ScreenerOption[]; // "Any" is implicit (no filter), not listed
@@ -315,6 +317,8 @@ export type ScreenerFilterValue =
 
 export interface ScreenerQuery {
   filters: ScreenerFilterValue[];
+  /** v3: market code from ScreenerMeta.markets ("US", "ST", "LSE", "TO", ...) or "ALL". Defaults to "US". */
+  market?: string;
   universe: "stocks" | "etfs" | "all";
   tickers?: string;          // optional "AAPL, MSFT" restriction
   view: string;              // ScreenerView id
@@ -337,6 +341,9 @@ export interface ScreenerView {
 }
 
 export interface ScreenerMeta {
+  /** v3: markets the pipeline tracks. GET /api/screener/meta?market=ST marks each filter's `available` from that market's actual data coverage. */
+  markets: MarketInfo[];
+  market: string;
   filters: ScreenerFilterDef[];
   columns: ScreenerColumnDef[];
   views: ScreenerView[];
@@ -375,3 +382,41 @@ export interface UniverseStatus {
   dailyCreditBudget: number;
   jobs: UniverseJobStatus[];
 }
+
+// ======================= v3: multi-market universe + agent API =======================
+
+export interface MarketInfo {
+  code: string;              // EODHD exchange code: "US", "ST", "LSE", "TO", "XETRA", "AU", ...
+  name: string;              // "Nasdaq Stockholm"
+  country: string;
+  currency: string;          // listing currency, e.g. "SEK"
+  timezone: string;          // IANA, e.g. "Europe/Stockholm"
+  enabled: boolean;
+  symbols: number;
+  withPrices: number;
+  withFundamentals: number;
+  lastPriceDate: string | null;
+}
+
+// Agent-facing API (see docs/AGENT-API.md):
+// GET  /api/v1/screen?f=cap_midover,ta_sma50_pa&market=US&o=-perf_3m&v=overview&limit=50&offset=0
+//        Finviz URL-style filter codes (f), order (o, "-" = desc), view (v) -> ScreenerResponse
+// POST /api/v1/screen   body ScreenerQuery -> ScreenerResponse
+// GET  /api/v1/filters?market=US            -> ScreenerMeta (filters include `code` = Finviz-style URL code)
+// GET  /api/v1/symbols/:symbol/overview, /bars, /news, /events — thin aliases of the existing endpoints
+// GET  /api/openapi.json                     -> OpenAPI 3.1 spec
+// POST /mcp                                  -> MCP (streamable HTTP) with tools: screen, list_filters, list_markets,
+//                                               symbol_overview, get_bars, search_symbols, universe_status
+// Auth: loopback callers need no token; others need `Authorization: Bearer <token>` from EODVIEW_API_TOKENS
+//       (comma-separated) or tokens created in Settings (stored hashed). Tokens are read-only.
+
+export interface ApiTokenView {
+  id: string;
+  name: string;
+  prefix: string;            // first 6 chars, for identification
+  createdAt: UnixSeconds;
+  lastUsedAt: UnixSeconds | null;
+}
+// GET    /api/tokens        -> ApiTokenView[]                     (config-guarded)
+// POST   /api/tokens {name} -> ApiTokenView & { token: string }   (token shown once)
+// DELETE /api/tokens/:id    -> { ok: true }
