@@ -20,7 +20,8 @@ export interface UiState {
   searchOpen: boolean;
   indicatorsOpen: boolean;
   settingsOpen: boolean;
-  sidebarTab: "watchlist" | "alerts";
+  sidebarTab: "watchlist" | "alerts" | "details";
+  page: "chart" | "screener";
   upstream: "connected" | "disconnected" | "no_key" | "unknown";
 }
 
@@ -61,6 +62,7 @@ export const useStore = create<AppState>((set, get) => ({
     indicatorsOpen: false,
     settingsOpen: false,
     sidebarTab: "watchlist",
+    page: location.hash.startsWith("#/screener") ? "screener" : "chart",
     upstream: "unknown",
   },
 

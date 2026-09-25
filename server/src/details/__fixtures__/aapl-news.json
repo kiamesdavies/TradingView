@@ -1,0 +1,86 @@
+[
+ {
+  "date": "2026-09-25T12:00:16+00:00",
+  "title": "Apple shares near buy point after new iPhone launch",
+  "content": "<p>Apple  stock traded just below a buy point.</p>\n\n<p>Analysts raised targets &amp; reiterated ratings. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. </p>",
+  "link": "https://finance.yahoo.com/m/c29b7fb8-c48b-35ef-b3e1-9e2d8fee4fc4/apple-stock-approaches-buy.html",
+  "symbols": [
+   "AAPL.US"
+  ],
+  "tags": [
+   "EARNINGS",
+   "PRICE TARGET",
+   "PRICE-TARGET"
+  ],
+  "sentiment": {
+   "polarity": 0.718,
+   "neg": 0,
+   "neu": 0.906,
+   "pos": 0.094
+  }
+ },
+ {
+  "date": "2026-09-25T10:00:00+00:00",
+  "title": "Tariff refunds may take a while to reach consumers",
+  "content": "Refunds on tariffs could take months to reach shoppers.",
+  "link": "https://finance.yahoo.com/economy/policy/articles/firms-keeping-billions-tariff-refunds-100000112.html",
+  "symbols": [
+   "AAPL.US",
+   "FDX.US",
+   "TJX.US",
+   "UPS.US",
+   "WALM34.SA",
+   "WMT.BA",
+   "WMT.F",
+   "WMT.HM",
+   "WMT.MU",
+   "WMT.MX",
+   "WMT.US",
+   "WMTD.F"
+  ],
+  "tags": [
+   "CONSUMER-ADVOCACY",
+   "REFUNDS",
+   "TARIFFS",
+   "TRADE-POLICY"
+  ],
+  "sentiment": {
+   "polarity": 0.97,
+   "neg": 0.065,
+   "neu": 0.853,
+   "pos": 0.082
+  }
+ },
+ {
+  "date": "2026-09-25T09:20:02+00:00",
+  "title": "Is SPY a strong ETF right now?",
+  "content": "",
+  "link": "https://finance.yahoo.com/markets/stocks/articles/state-street-spdr-p-500-092002022.html",
+  "symbols": [
+   "AAPL.US",
+   "IVV.US",
+   "MSFT.US",
+   "NVDA.US",
+   "SPY.US",
+   "STT.MX",
+   "STT.US",
+   "VOO.US",
+   "ZYA.DU",
+   "ZYA.MU"
+  ],
+  "tags": [
+   "ETF",
+   "FINANCIALS",
+   "INFORMATION-TECHNOLOGY",
+   "INSTITUTIONAL INVESTORS",
+   "LARGE-CAP",
+   "TELECOM"
+  ],
+  "sentiment": {
+   "polarity": 0.995,
+   "neg": 0.025,
+   "neu": 0.861,
+   "pos": 0.113
+  }
+ }
+]

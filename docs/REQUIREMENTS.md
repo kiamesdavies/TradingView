@@ -69,3 +69,32 @@ A self-hosted TradingView replacement for personal swing trading, backed by EODH
 
 ## Out of scope for v1
 Screener, fundamentals panel, news, multi-chart layouts, Pine-like scripting, paper trading, auth for multiple users.
+
+---
+
+# v2 additions (2026-09-25)
+
+User feedback on v1: no way to pick a date range like TradingView's bottom bar; no fundamentals (earnings especially); wants a Finviz-style screener page.
+
+### F9 Range bar (below the chart, TradingView style)
+- Range presets 1D 5D 1M 3M 6M YTD 1Y 5Y All. Each switches to TradingView's matching interval (1D→1m, 5D→5m, 1M→30m, 3M→1h, 6M→4h, YTD/1Y→D, 5Y→W, All→M), loads enough history and fits the visible range.
+- Go-to-date button (calendar icon): pick a date (or from–to range); history is loaded back to it and the chart scrolls there.
+- Live clock in the selected time zone (click → choose UTC, exchange time, local, or a common IANA zone); the time axis uses the same zone.
+- Toggles on the right: ADJ (split/dividend-adjusted daily data), % (percentage scale), log, auto (autoscale).
+- Chart event markers: E (earnings, with EPS vs estimate tooltip), D (dividends), S (splits); upcoming earnings shown at the right edge.
+
+### F10 Symbol details (right sidebar "Details" tab, like TradingView's symbol panel)
+- Logo, ticker, full name, exchange, sector • industry.
+- Regular-session price/change and a pre-market / post-market line from EODHD extended-hours quotes.
+- Latest news card (click → article; "More news" list).
+- Key stats: next earnings (in N days), volume, avg volume 30D, market cap; expand for P/E, fwd P/E, EPS TTM, dividend yield, beta, 52W range, shares float, short % float, employees, etc.
+- Earnings chart: last quarters' EPS actual (filled; green beat / red miss) vs estimate (hollow), next quarter's estimate; EPS/Revenue toggle.
+- Analyst consensus bar + price target; company profile.
+
+### F11 Screener page (Finviz-style)
+- Separate page (Chart | Screener nav, `#/screener`).
+- Filter panel with Finviz's tabs (Descriptive, Fundamental, Technical, News, ETF, All) and grid of dropdowns using Finviz's option vocabulary ("Over 10", "Price above SMA50", "New High", "Today Before Market Open"…), plus "Custom…" min/max for numeric filters. Filters that can't be computed from EODHD data are shown disabled with a reason.
+- Result views: Overview, Valuation, Financial, Ownership, Performance, Technical, ETF, Charts (mini-chart grid). Sortable columns, paging, CSV export, ticker click opens the chart.
+- Saved presets (server side).
+- Data: a local universe DB (US listed common stocks + ETFs, ~11k symbols) built by a background pipeline from EODHD bulk end-of-day (all symbols per call), per-ticker fundamentals (rolling refresh within a daily API-credit budget; bulk fundamentals is not on the user's plan), earnings calendar, index constituents, news. Technical metrics are computed locally from stored daily history.
+- The pipeline respects `EODVIEW_DAILY_CREDIT_BUDGET` (default 40000 of the plan's 100000/day) and stops when the account's daily usage nears the limit; status and progress visible on the screener page.

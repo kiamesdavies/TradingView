@@ -3,6 +3,7 @@ import { useStore } from "../state/store";
 import { AlertsPanel } from "./AlertsPanel";
 import { BellIcon, ListIcon } from "./icons";
 import { WatchlistPanel } from "./WatchlistPanel";
+import { DetailsPanel } from "../details/DetailsPanel";
 
 export function Sidebar({ handle }: { handle: ChartHandle | null }) {
   const tab = useStore((s) => s.ui.sidebarTab);
@@ -30,6 +31,15 @@ export function Sidebar({ handle }: { handle: ChartHandle | null }) {
           <BellIcon size={16} /> Alerts
           {activeAlerts > 0 && <span className="count-pill">{activeAlerts}</span>}
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "details"}
+          className={`tab${tab === "details" ? " active" : ""}`}
+          onClick={() => setUi({ sidebarTab: "details" })}
+        >
+          Details
+        </button>
       </div>
       {/* Both panels stay mounted so watchlist subscriptions and the alert form survive tab switches. */}
       <div className="tab-body" role="tabpanel" hidden={tab !== "watchlist"}>
@@ -38,6 +48,11 @@ export function Sidebar({ handle }: { handle: ChartHandle | null }) {
       <div className="tab-body" role="tabpanel" hidden={tab !== "alerts"}>
         <AlertsPanel handle={handle} />
       </div>
+      {tab === "details" && (
+        <div className="tab-body" role="tabpanel">
+          <DetailsPanel />
+        </div>
+      )}
     </aside>
   );
 }

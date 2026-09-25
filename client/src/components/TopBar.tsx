@@ -23,17 +23,27 @@ function SymbolQuote() {
 
 export function TopBar() {
   const symbol = useStore((s) => s.layout.symbol);
-  const logScale = useStore((s) => s.layout.logScale);
   const theme = useStore((s) => s.layout.theme);
   const indicatorCount = useStore((s) => s.layout.indicators.length);
-  const setLayout = useStore((s) => s.setLayout);
   const setTheme = useStore((s) => s.setTheme);
   const setUi = useStore((s) => s.setUi);
   const sidebarCollapsed = useShell((s) => s.sidebarCollapsed);
   const { code, exchange } = splitSymbol(symbol);
 
+  const page = useStore((s) => s.ui.page);
+  const goto = (p: "chart" | "screener") => setUi({ page: p });
+
   return (
     <header className="topbar">
+      <div className="tb-nav" role="tablist" aria-label="Page">
+        <button type="button" role="tab" aria-selected={page === "chart"} className={`tb-btn${page === "chart" ? " active" : ""}`} onClick={() => goto("chart")}>
+          Chart
+        </button>
+        <button type="button" role="tab" aria-selected={page === "screener"} className={`tb-btn${page === "screener" ? " active" : ""}`} onClick={() => goto("screener")}>
+          Screener
+        </button>
+      </div>
+      <div className="tb-sep" />
       <button
         type="button"
         className="tb-btn symbol-btn"
@@ -54,15 +64,6 @@ export function TopBar() {
         <IndicatorsIcon />
         <span className="tb-label">Indicators</span>
         {indicatorCount > 0 && <span className="count-pill">{indicatorCount}</span>}
-      </button>
-      <button
-        type="button"
-        className={`tb-btn${logScale ? " active" : ""}`}
-        aria-pressed={logScale}
-        onClick={() => setLayout({ logScale: !logScale })}
-        title="Logarithmic price scale"
-      >
-        log
       </button>
 
       <div className="tb-spacer" />

@@ -6,6 +6,10 @@ import * as marketRoutes from "./routes/market";
 import * as configRoutes from "./routes/config";
 import * as storeRoutes from "./routes/store";
 import * as alertRoutes from "./routes/alerts";
+import * as detailsRoutes from "./routes/details";
+import * as screenerRoutes from "./routes/screener";
+import * as universeRoutes from "./routes/universe";
+import { startUniverseScheduler } from "./universe/scheduler";
 import { hub } from "./realtime/hub";
 import { startAlertEngine } from "./alerts/engine";
 import { isAllowedOrigin, needsOriginCheck, originInputFrom, parseAllowedOrigins } from "./origin";
@@ -15,7 +19,11 @@ marketRoutes.register(router);
 configRoutes.register(router);
 storeRoutes.register(router);
 alertRoutes.register(router);
+detailsRoutes.register(router);
+screenerRoutes.register(router);
+universeRoutes.register(router);
 startAlertEngine();
+if (process.env.EODVIEW_UNIVERSE !== "off") startUniverseScheduler();
 
 /** Extra browser origins allowed to open /ws and send state-changing /api requests. */
 const ALLOWED_ORIGINS = parseAllowedOrigins(process.env.EODVIEW_ALLOWED_ORIGINS);
@@ -25,6 +33,7 @@ const serveStatic = existsSync(DIST);
 
 const server = Bun.serve<{ id: string }>({
   port: config.port,
+  idleTimeout: 60, // cold details/news fetches can exceed Bun's 10s default
   async fetch(req, server) {
     const url = new URL(req.url);
     if (url.pathname === "/ws") {

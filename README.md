@@ -11,6 +11,18 @@ Bands, RSI, MACD, ATR and Volume MA; trendline, horizontal line and ray, rectang
 drawings saved per symbol; multiple watchlists with live quotes; server-side price alerts with
 toasts and browser notifications; layout saved on the server.
 
+New in v2:
+
+- **Range bar under the chart**: 1D, 5D, 1M, 3M, 6M, YTD, 1Y, 5Y and All presets that pick the interval and the
+  visible range, a go-to-date popover, a clock with a time zone menu (UTC, exchange, local or a named zone), and
+  ADJ (split/dividend-adjusted daily bars on or off), % and log price scales and price autoscale. Earnings,
+  dividend and split markers (E/D/S) on daily and longer charts, including the next earnings date.
+- **Details tab** in the sidebar, like TradingView's symbol panel: logo, price with the pre/post-market line,
+  latest news, key stats, an EPS/revenue chart with estimates, analyst ratings and the company profile.
+- **Screener page** with Finviz-style filters (Descriptive, Fundamental, Technical, News, ETF), Finviz views
+  (Overview, Valuation, Financial, Ownership, Performance, Technical, ETF, Charts), sorting, paging, saved presets
+  and CSV export. It runs on a local copy of the whole US market that a background pipeline builds (see below).
+
 ## Quick start
 
 Requires [Bun](https://bun.sh) 1.1.36 or newer. Node is used only by Vite, which Bun runs for you.
@@ -65,6 +77,55 @@ browser's `Origin` is not the server's own origin, a loopback origin (such as th
 in `EODVIEW_ALLOWED_ORIGINS`. JSON request bodies must be sent as `Content-Type: application/json` (415 otherwise).
 Clients that send no `Origin` (curl, scripts) are not affected.
 
+## Screener data pipeline
+
+The screener does not query EODHD per request. A background job loop in the server (`server/src/universe/`)
+keeps a table with one row of metrics per US stock and ETF (about 11,000 symbols) in the SQLite database:
+
+| Job | What it does | Cost (API credits) |
+|---|---|---|
+| `symbols` | US stock and ETF list (weekly) | ~1 |
+| `prices` | Latest session for every symbol from the bulk EOD file, plus that day's splits and dividends; re-downloads the history of symbols that split or paid a dividend | ~300 per session + 1 per re-download |
+| `backfill` | One bulk file per missing past session until `EODVIEW_HISTORY_DAYS` sessions are stored | 100 per session |
+| `earnings` | Earnings calendar (daily) | ~1 |
+| `indices` | S&P 500, Nasdaq-100 and Dow membership (weekly) | ~30 |
+| `news` | Latest news across all tickers, for the News filter (every 2 hours) | 5 per 250 articles, up to 40 per run |
+| `fundamentals` | Per-symbol fundamentals, most-traded symbols first, refreshed on a rolling basis | 10 per symbol |
+| `metrics` | Recomputes the metrics table (technicals, performance, valuation…) | none |
+
+**First run.** With the defaults (`EODVIEW_HISTORY_DAYS=300`) the first build takes roughly
+300 × 100 = 30,000 credits for price history and 10 credits per symbol for fundamentals, so on a 100,000/day plan it
+spreads over about two days: prices and technicals are ready within the first hour (the backfill fetches about one
+session every 3 s), fundamentals fill in gradually (about 10 symbols per second while the daily budget lasts). The
+screener works throughout; filters whose data has not been collected yet are shown as unavailable. After that the
+daily upkeep is a few thousand credits.
+
+**Credit budget.** Before every paid request the pipeline checks two limits and pauses until 00:00 UTC when either
+is reached ("budget exhausted, resumes …" in the job status):
+
+- its own usage today must stay under `EODVIEW_DAILY_CREDIT_BUDGET` (default 40,000), and
+- the account's total usage (EODHD `/api/user`, checked at most every 5 minutes) must stay below the plan's daily
+  limit minus `EODVIEW_CREDIT_RESERVE` (default 15,000), leaving room for charts and your other tools.
+
+Set `EODVIEW_UNIVERSE=off` to disable the loop (the screener then shows whatever is already stored; jobs can still be
+started by hand). Job status: `GET /api/universe/status`; run one job now: `POST /api/universe/jobs/<name>/run`
+(localhost only, like `/api/config`).
+
+## New API endpoints (v2)
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/bars?…&adj=0\|1` | `adj=0` returns unadjusted daily/weekly/monthly bars (default adjusted) |
+| `GET /api/symbols/:symbol/overview` | Details panel data: profile, quote, extended-hours quote, key stats, earnings, revenue, analyst ratings, latest news |
+| `GET /api/symbols/:symbol/news?limit=` | News for one symbol (1–50, default 20) |
+| `GET /api/symbols/:symbol/events?from&to` | Earnings, dividend and split markers (unix seconds) |
+| `GET /api/symbols/:symbol/logo` | Company logo (cached on disk) |
+| `GET /api/screener/meta` | Filters with their options, columns, views and the pipeline status |
+| `POST /api/screener/query` | Run a screen: filters, universe, view, sort, offset, limit |
+| `GET/POST /api/screener/presets`, `PUT/DELETE /api/screener/presets/:id` | Saved screens |
+| `GET /api/screener/sparklines?symbols=A,B&days=60` | Closing prices for the Charts view |
+| `GET /api/universe/status`, `POST /api/universe/jobs/:name/run` | Pipeline status and manual runs |
+
 ## Environment variables
 
 | Variable | Default | Purpose |
@@ -78,6 +139,11 @@ Clients that send no `Origin` (curl, scripts) are not affected.
 | `EODVIEW_INTRADAY_TTL` | `60` | Cache time in seconds for the intraday window that contains now |
 | `EODVIEW_INTRADAY_HISTORY_TTL` | `21600` | Cache time in seconds for older intraday windows |
 | `EODVIEW_QUOTE_TTL` | `10` | Cache time in seconds for `/api/quotes` |
+| `EODVIEW_UNIVERSE` | on | `off` disables the screener's background pipeline |
+| `EODVIEW_HISTORY_DAYS` | `300` | Sessions of daily history the pipeline keeps for every symbol (SMA200 and 52-week metrics need about 260) |
+| `EODVIEW_DAILY_CREDIT_BUDGET` | `40000` | Maximum EODHD credits the pipeline spends per UTC day |
+| `EODVIEW_CREDIT_RESERVE` | `15000` | Credits of the plan's daily limit the pipeline never touches |
+| `EODVIEW_API_PORT` | `3001` | Dev only: the server port the Vite dev server proxies `/api` and `/ws` to |
 
 ## Scripts (repo root)
 
@@ -86,7 +152,7 @@ Clients that send no `Origin` (curl, scripts) are not affected.
 | `bun run dev` | Starts the server with `bun --watch` on :3001 and Vite on :5173. Vite proxies `/api` and `/ws` to the server. |
 | `bun run build` | Runs the Vite production build into `client/dist` |
 | `bun run start` | Starts the production server, which also serves `client/dist` when it exists |
-| `bun test` | Runs every unit test: indicator math, aggregation, EODHD mapping, the bar cache, config, alerts, realtime, stores, candles, drawings geometry and the WebSocket client |
+| `bun test` | Runs every unit test: indicator math, aggregation, EODHD mapping, the bar cache, config, alerts, realtime, stores, candles, drawings geometry, the WebSocket client, and (v2) the universe pipeline, screener filters/SQL, details API, range bar and screener UI helpers |
 | `bun run typecheck` | Runs `tsc` on the server and the client |
 
 ## Architecture
@@ -105,8 +171,11 @@ browser (React 19 + Zustand + lightweight-charts v5)  --REST /api, WS /ws-->  Bu
     every browser tab.
   - `alerts/`: alert storage and evaluation against ticks.
   - `store/`: layout, watchlists and drawings.
+  - `universe/`: the screener's background pipeline and metrics table; `screener/`: filter registry, SQL
+    builder, views and presets; `details/`, `fundamentals/`: the details panel API and the shared fundamentals cache.
 - `client/src`:
-  - `chart/`: chart core.
+  - `chart/`: chart core and the range bar.
+  - `details/`: the Details sidebar tab; `screener/`: the screener page.
   - `indicators/`: indicator layer and dialog.
   - `drawings/`: drawing tools.
   - `components/`, `App.tsx`: app shell.
@@ -116,6 +185,19 @@ See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) and [docs/ARCHITECTURE.md](docs
 for the full requirements and the module contract.
 
 ## Known limitations
+
+- **Screener data.**
+  - Metrics that need long history (SMA50/200, 52-week range from stored bars, 13/26-week performance) fill in
+    as the backfill proceeds; until then 52-week high/low and average volume come from the bulk file.
+  - Not available from EODHD: optionable/shortable flags, chart patterns, all-time high/low, ETF tags, fund flows and
+    active/passive. These filters are shown disabled. There is no Russell 2000 index option.
+  - Some values are approximations: 5-year EPS growth is derived from P/E and PEG; 3-year dividend growth from
+    dividends paid; "Yesterday before/after market" uses the next report's timing.
+  - ETFs have no market cap (use the AUM filter). EODHD reports 0 net margin for some loss-making companies.
+- **Details panel.** Extended-hours rules don't model market holidays. Forex, crypto and indices show only the
+  price and volume.
+- **Range bar.** On intraday charts in a non-UTC zone, lightweight-charts still places day/month tick marks on UTC
+  boundaries (labels are in the chosen zone). 1D/5D ignore holidays. Only the next upcoming earnings is marked.
 
 - **Stale 1m data.** EODHD's 1m history for some crypto pairs ends weeks in the past; BTC-USD.CC
   1m ends in July 2026, while 5m and up are current. The chart shows that old history, then a
@@ -132,7 +214,6 @@ for the full requirements and the module contract.
   suffix such as `BRK-B.US` are sent upstream as-is; whether EODHD streams them under that name
   has not been checked.
 - **Chart details.**
-  - Only log scale is offered, not percent scale.
   - Past the end of the data, 1D time steps are calendar days, so weekends are not skipped.
   - Price precision is guessed from recent prices.
   - Indicator colors do not follow the light/dark theme.

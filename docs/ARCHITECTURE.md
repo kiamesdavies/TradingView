@@ -74,3 +74,35 @@ Owns `client/src/main.tsx`, `client/src/App.tsx`, `client/src/components/**`, `c
 - Server code uses Bun APIs only (no express, no node-fetch). Client uses React 19 function components + Zustand.
 - Pure logic gets `bun test` tests next to it (`*.test.ts`).
 - Do not commit; the lead commits after integration.
+
+---
+
+# v2 modules (range bar, details, screener)
+
+New contract types are in `shared/src/types.ts` under "v2". Lead-written glue for v2:
+- `server/src/eodhd/factory.ts`: `eodhd.raw(path, params?, what?)` for any EODHD endpoint (key injected, errors mapped, in-flight dedupe).
+- `server/src/fundamentals/store.ts`: `getFundamentals(symbol, maxAgeSec)`, `refreshFundamentals(symbol)`, `getCachedFundamentals(symbol)` — shared SQLite cache of raw fundamentals JSON. Use it; don't create another fundamentals cache.
+- `server/src/universe/metricsSchema.ts`: the `universe_metrics` column contract between pipeline (writer) and screener (reader). Do not edit; if you need a column, report it.
+- `server/src/index.ts` registers `routes/details.ts`, `routes/screener.ts`, `routes/universe.ts` (each `register(router)`) and calls `startUniverseScheduler()` from `universe/scheduler.ts` (skipped when `EODVIEW_UNIVERSE=off`).
+- Client: `ui.page` ("chart" | "screener", synced to `#/chart` / `#/screener` by `components/usePageRoute.ts`), TopBar Chart/Screener nav, `ui.sidebarTab` gains "details". Slots with placeholder components: `client/src/chart/ChartBottomBar.tsx`, `client/src/details/DetailsPanel.tsx`, `client/src/screener/ScreenerPage.tsx` — replace them.
+
+### S3 — Universe pipeline
+Owns `server/src/universe/**` (not metricsSchema.ts), `server/src/routes/universe.ts`.
+Tables: `universe_symbols`, `universe_bars(symbol, date, open, high, low, close, adj_close, volume)`, `universe_metrics` (from METRIC_COLUMNS), job state, credit ledger. Jobs: symbols, prices, backfill, fundamentals, indices, earnings, news, metrics. Export `startUniverseScheduler()`, `universeStatus(): UniverseStatus`, `runJob(name)`, and `getSparklines(symbols, days): Record<Symbol, number[]>` (closes from universe_bars) for the screener.
+
+### S4 — Screener API
+Owns `server/src/screener/**`, `server/src/routes/screener.ts`.
+Finviz-vocabulary filter registry → SQL over `universe_metrics` (whitelisted columns only, parameters bound), views/columns, presets table, `GET /api/screener/sparklines?symbols=A,B&days=60 -> Record<Symbol, number[]>` (via universe `getSparklines`). `ScreenerMeta.universe` from `universeStatus()`.
+
+### S5 — Symbol details API + adjusted toggle
+Owns `server/src/details/**`, `server/src/routes/details.ts`; may edit `server/src/cache/**` and `server/src/eodhd/mappers.ts` for the `adj` flag.
+Overview (fundamentals + real-time quote + `/us-quote-delayed` extended hours + news), news, chart events (earnings from Earnings.History, dividends `/div`, splits `/splits`), logo proxy `GET /api/symbols/:symbol/logo` (cached on disk, 404 → client falls back to a letter avatar). `/api/bars` gains `adj=0|1`.
+
+### C5 — Chart range bar & chart enhancements
+Owns `client/src/chart/**` (incl. ChartBottomBar.tsx, ChartView.tsx, datafeed.ts). May remove the log toggle from `components/TopBar.tsx` (it moves to the bottom bar) — no other TopBar edits.
+
+### C6 — Details panel
+Owns `client/src/details/**`.
+
+### C7 — Screener page
+Owns `client/src/screener/**`.

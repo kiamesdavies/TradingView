@@ -1,0 +1,315 @@
+{
+ "General": {
+  "Code": "AAPL",
+  "Type": "Common Stock",
+  "Name": "Apple Inc.",
+  "Exchange": "NASDAQ",
+  "CurrencyCode": "USD",
+  "CurrencyName": "US Dollar",
+  "CurrencySymbol": "$",
+  "CountryName": "USA",
+  "CountryISO": "US",
+  "OpenFigi": "BBG000B9XRY4",
+  "ISIN": "US0378331005",
+  "LEI": "HWUPKR0MPOU8FGXBT394",
+  "PrimaryTicker": "AAPL.US",
+  "CUSIP": "037833100",
+  "CIK": "0000320193",
+  "EmployerIdNumber": "94-2404110",
+  "FiscalYearEnd": "September",
+  "IPODate": "1980-12-12",
+  "InternationalDomestic": "International/Domestic",
+  "Sector": "Technology",
+  "Industry": "Consumer Electronics",
+  "GicSector": "Information Technology",
+  "GicGroup": "Technology Hardware & Equipment",
+  "GicIndustry": "Technology Hardware, Storage & Peripherals",
+  "GicSubIndustry": "Technology Hardware, Storage & Peripherals",
+  "HomeCategory": "Domestic",
+  "IsDelisted": false,
+  "Description": "Apple Inc. designs, manufactures, and markets smartphones, personal computers, tablets, wearables, and accessories worldwide. The company offers iPhone, a line of smartphones; Mac, a line of personal computers; iPad, a line of multi-purpose tablets; and wearables, home, and accessories comprising AirPods, Apple Vision Pro, Apple TV, Apple Watch, Beats products, and HomePod, as well as Apple branded and third-party accessories. It also provides AppleCare support and cloud services; and operates various platforms, including the App Store that allows customers to discover and download applications and digital content, such as books, music, video, games, and podcasts, as well as advertising services include third-party licensing arrangements and its own advertising platforms. In addition, the company offers various subscription-based services, such as Apple Arcade, a game subscription service; Apple Fitness+, a personalized fitness service; Apple Music, which offers users a curated listening experience with on-demand radio stations; Apple News+, a subscription news and magazine service; Apple TV, which offers original content and live sports; Apple Card, a co-branded credit card; and Apple Pay, a cashless payment service, as well as licenses its intellectual property. The company serves consumers, and small and mid-sized businesses; and the education, enterprise, and government markets. It distributes third-party applications for its products through the App Store. The company also sells its products through its retail and online stores, and direct sales force; and third-party cellular network carriers and resellers. The company was formerly known as Apple Computer, Inc. and changed its name to Apple Inc. in January 2007. Apple Inc. was founded in 1976 and is headquartered in Cupertino, California.",
+  "Address": "One Apple Park Way, Cupertino, CA, United States, 95014",
+  "Phone": "(408) 996-1010",
+  "WebURL": "https://www.apple.com",
+  "LogoURL": "/img/logos/US/aapl.png",
+  "FullTimeEmployees": 150000,
+  "UpdatedAt": "2026-09-24"
+ },
+ "Highlights": {
+  "MarketCapitalization": 4902477103104,
+  "MarketCapitalizationMln": 4902477.1031,
+  "EBITDA": 167959003136,
+  "PERatio": 38.6115,
+  "PEGRatio": 2.706,
+  "WallStreetTargetPrice": 328.2221,
+  "BookValue": 7.36,
+  "DividendShare": 1.05,
+  "DividendYield": 0.0031,
+  "EarningsShare": 8.7,
+  "EPSEstimateCurrentYear": 8.8195,
+  "EPSEstimateNextYear": 9.5815,
+  "EPSEstimateNextQuarter": 2.01,
+  "EPSEstimateCurrentQuarter": 1.8924,
+  "MostRecentQuarter": "2026-06-30",
+  "ProfitMargin": 0.2762,
+  "OperatingMarginTTM": 0.3262,
+  "ReturnOnAssetsTTM": 0.2708,
+  "ReturnOnEquityTTM": 1.4875,
+  "RevenueTTM": 466822987776,
+  "RevenuePerShareTTM": 31.707,
+  "QuarterlyRevenueGrowthYOY": 0.164,
+  "GrossProfitTTM": 227123003392,
+  "DilutedEpsTTM": 8.7,
+  "QuarterlyEarningsGrowthYOY": 0.287
+ },
+ "Valuation": {
+  "TrailingPE": 38.6115,
+  "ForwardPE": 35.2113,
+  "PriceSalesTTM": 10.5018,
+  "PriceBookMRQ": 45.7425,
+  "EnterpriseValue": 4940475543600,
+  "EnterpriseValueRevenue": 10.5826,
+  "EnterpriseValueEbitda": 29.413
+ },
+ "SharesStats": {
+  "SharesOutstanding": 14594180000,
+  "SharesFloat": 14569078010,
+  "PercentInsiders": 1.6480000000000001,
+  "PercentInstitutions": 66.34400000000001,
+  "SharesShort": null,
+  "SharesShortPriorMonth": null,
+  "ShortRatio": null,
+  "ShortPercentOutstanding": null,
+  "ShortPercentFloat": 0.0096
+ },
+ "Technicals": {
+  "Beta": 1.085,
+  "52WeekHigh": 345.34,
+  "52WeekLow": 242.7592,
+  "50DayMA": 321.5074,
+  "200DayMA": 287.1648,
+  "SharesShort": 139749097,
+  "SharesShortPriorMonth": 116327753,
+  "ShortRatio": 2.97,
+  "ShortPercent": 0.0096
+ },
+ "SplitsDividends": {
+  "ForwardAnnualDividendRate": 1.08,
+  "ForwardAnnualDividendYield": 0.0032,
+  "PayoutRatio": 0.1216,
+  "DividendDate": "2026-08-13",
+  "ExDividendDate": "2026-08-10",
+  "LastSplitFactor": "4:1",
+  "LastSplitDate": "2020-08-31"
+ },
+ "AnalystRatings": {
+  "Rating": 4.0417,
+  "TargetPrice": 328.2221,
+  "StrongBuy": 23,
+  "Buy": 7,
+  "Hold": 16,
+  "Sell": 1,
+  "StrongSell": 1
+ },
+ "Earnings": {
+  "History": {
+   "2023-12-31": {
+    "reportDate": "2024-02-01",
+    "date": "2023-12-31",
+    "beforeAfterMarket": "AfterMarket",
+    "currency": "USD",
+    "epsActual": 2.18,
+    "epsEstimate": 2.11,
+    "epsDifference": 0.07,
+    "surprisePercent": 3.3175
+   },
+   "2024-03-31": {
+    "reportDate": "2024-05-02",
+    "date": "2024-03-31",
+    "beforeAfterMarket": "AfterMarket",
+    "currency": "USD",
+    "epsActual": 1.53,
+    "epsEstimate": 1.5,
+    "epsDifference": 0.03,
+    "surprisePercent": 2
+   },
+   "2024-06-30": {
+    "reportDate": "2024-08-01",
+    "date": "2024-06-30",
+    "beforeAfterMarket": "AfterMarket",
+    "currency": "USD",
+    "epsActual": 1.4,
+    "epsEstimate": 1.34,
+    "epsDifference": 0.06,
+    "surprisePercent": 4.4776
+   },
+   "2024-09-30": {
+    "reportDate": "2024-10-31",
+    "date": "2024-09-30",
+    "beforeAfterMarket": "AfterMarket",
+    "currency": "USD",
+    "epsActual": 0.97,
+    "epsEstimate": 0.95,
+    "epsDifference": 0.02,
+    "surprisePercent": 2.1053
+   },
+   "2024-12-31": {
+    "reportDate": "2025-01-30",
+    "date": "2024-12-31",
+    "beforeAfterMarket": "AfterMarket",
+    "currency": "USD",
+    "epsActual": 2.4,
+    "epsEstimate": 2.34,
+    "epsDifference": 0.06,
+    "surprisePercent": 2.5641
+   },
+   "2025-03-31": {
+    "reportDate": "2025-05-01",
+    "date": "2025-03-31",
+    "beforeAfterMarket": "AfterMarket",
+    "currency": "USD",
+    "epsActual": 1.65,
+    "epsEstimate": 1.62,
+    "epsDifference": 0.03,
+    "surprisePercent": 1.8519
+   },
+   "2025-06-30": {
+    "reportDate": "2025-07-31",
+    "date": "2025-06-30",
+    "beforeAfterMarket": "AfterMarket",
+    "currency": "USD",
+    "epsActual": 1.57,
+    "epsEstimate": 1.43,
+    "epsDifference": 0.14,
+    "surprisePercent": 9.7902
+   },
+   "2025-09-30": {
+    "reportDate": "2025-10-30",
+    "date": "2025-09-30",
+    "beforeAfterMarket": "AfterMarket",
+    "currency": "USD",
+    "epsActual": 1.85,
+    "epsEstimate": 1.77,
+    "epsDifference": 0.08,
+    "surprisePercent": 4.5198
+   },
+   "2025-12-31": {
+    "reportDate": "2026-01-29",
+    "date": "2025-12-31",
+    "beforeAfterMarket": "AfterMarket",
+    "currency": "USD",
+    "epsActual": 2.84,
+    "epsEstimate": 2.67,
+    "epsDifference": 0.17,
+    "surprisePercent": 6.367
+   },
+   "2026-03-31": {
+    "reportDate": "2026-04-30",
+    "date": "2026-03-31",
+    "beforeAfterMarket": "AfterMarket",
+    "currency": "USD",
+    "epsActual": 2.01,
+    "epsEstimate": 1.94,
+    "epsDifference": 0.07,
+    "surprisePercent": 3.6082
+   },
+   "2026-06-30": {
+    "reportDate": "2026-07-30",
+    "date": "2026-06-30",
+    "beforeAfterMarket": "AfterMarket",
+    "currency": "USD",
+    "epsActual": 2.02,
+    "epsEstimate": 1.88,
+    "epsDifference": 0.14,
+    "surprisePercent": 7.4468
+   },
+   "2026-09-30": {
+    "reportDate": "2026-10-29",
+    "date": "2026-09-30",
+    "beforeAfterMarket": "AfterMarket",
+    "currency": null,
+    "epsActual": null,
+    "epsEstimate": 1.98,
+    "epsDifference": 0,
+    "surprisePercent": null
+   }
+  }
+ },
+ "Financials": {
+  "Income_Statement": {
+   "currency_symbol": "USD",
+   "quarterly": {
+    "2024-03-31": {
+     "date": "2024-03-31",
+     "filing_date": "2024-05-03",
+     "currency_symbol": "USD",
+     "totalRevenue": "90753000000.00",
+     "netIncome": "23636000000.00"
+    },
+    "2024-06-30": {
+     "date": "2024-06-30",
+     "filing_date": "2024-08-02",
+     "currency_symbol": "USD",
+     "totalRevenue": "85777000000.00",
+     "netIncome": "21448000000.00"
+    },
+    "2024-09-30": {
+     "date": "2024-09-30",
+     "filing_date": "2024-11-01",
+     "currency_symbol": "USD",
+     "totalRevenue": "94930000000.00",
+     "netIncome": "14736000000.00"
+    },
+    "2024-12-31": {
+     "date": "2024-12-31",
+     "filing_date": "2025-01-31",
+     "currency_symbol": "USD",
+     "totalRevenue": "124300000000.00",
+     "netIncome": "36330000000.00"
+    },
+    "2025-03-31": {
+     "date": "2025-03-31",
+     "filing_date": "2025-05-02",
+     "currency_symbol": "USD",
+     "totalRevenue": "95359000000.00",
+     "netIncome": "24780000000.00"
+    },
+    "2025-06-30": {
+     "date": "2025-06-30",
+     "filing_date": "2025-08-01",
+     "currency_symbol": "USD",
+     "totalRevenue": "94036000000.00",
+     "netIncome": "23434000000.00"
+    },
+    "2025-09-30": {
+     "date": "2025-09-30",
+     "filing_date": "2025-10-31",
+     "currency_symbol": "USD",
+     "totalRevenue": "102466000000.00",
+     "netIncome": "27466000000.00"
+    },
+    "2025-12-31": {
+     "date": "2025-12-31",
+     "filing_date": "2026-01-30",
+     "currency_symbol": "USD",
+     "totalRevenue": "143756000000.00",
+     "netIncome": "42097000000.00"
+    },
+    "2026-03-31": {
+     "date": "2026-03-31",
+     "filing_date": "2026-05-01",
+     "currency_symbol": "USD",
+     "totalRevenue": "111184000000.00",
+     "netIncome": "29578000000.00"
+    },
+    "2026-06-30": {
+     "date": "2026-06-30",
+     "filing_date": "2026-07-31",
+     "currency_symbol": "USD",
+     "totalRevenue": "109417000000.00",
+     "netIncome": "29789000000.00"
+    }
+   }
+  }
+ }
+}

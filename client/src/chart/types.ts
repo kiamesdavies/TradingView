@@ -1,5 +1,5 @@
 import type { IChartApi, ISeriesApi, PriceFormat, SeriesType } from "lightweight-charts";
-import type { Bar } from "@eodview/shared";
+import type { Bar, Symbol, Timeframe, UnixSeconds } from "@eodview/shared";
 
 export type BarsChangeKind = "reset" | "update" | "prepend";
 
@@ -19,4 +19,22 @@ export interface ChartHandle {
   onPriceFormatChanged(cb: (format: PriceFormat) => void): () => void;
   /** Convert a pixel coordinate on pane 0 to time/price (null outside data). */
   coordinateToPoint(x: number, y: number): { time: number; price: number } | null;
+
+  // ---- v2 (range bar) ----
+  /** Symbol / timeframe of the bars currently held (may lag the store briefly while a load starts). */
+  getSymbol(): Symbol;
+  getTimeframe(): Timeframe;
+  /** Resolves true once bars for the store's current symbol at `tf` are loaded; false on failure/supersede/timeout. */
+  whenLoaded(tf: Timeframe): Promise<boolean>;
+  /**
+   * Backfill until the oldest loaded bar is at/before `fromTime` (-Infinity = all history) or history runs out.
+   * Resolves true when covered (or no older data exists).
+   */
+  ensureHistory(fromTime: UnixSeconds, maxPages?: number): Promise<boolean>;
+  /** Show bars in [from, to] (to defaults to the last bar) with a little right padding. */
+  setVisibleTimeRange(from: UnixSeconds, to?: UnixSeconds): void;
+  /** Scroll so the bar at/after `time` is centred, keeping the current zoom. */
+  scrollToTime(time: UnixSeconds): void;
+  /** Fit all loaded bars. */
+  fitContent(): void;
 }

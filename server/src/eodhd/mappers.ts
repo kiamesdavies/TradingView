@@ -60,10 +60,12 @@ export function monthStart(t: number): number {
  * The last bars (ratio ≈ 1) therefore match live ticks exactly. Intraday data is not adjusted by
  * EODHD, so intraday bars older than the most recent split/dividend differ from daily bars.
  *
+ * With `adjusted = false` the raw (as-traded) OHLC and volume are returned unchanged (the ADJ toggle off).
+ *
  * Weekly/monthly bars are re-stamped to Monday / the 1st of the month (EODHD stamps them with the
  * first trading day), so they line up with the client's live-candle bucketing.
  */
-export function mapEod(raw: unknown, period: EodPeriod = "d"): Bar[] {
+export function mapEod(raw: unknown, period: EodPeriod = "d", adjusted = true): Bar[] {
   if (!Array.isArray(raw)) return [];
   const out: Bar[] = [];
   for (const r of raw) {
@@ -72,7 +74,7 @@ export function mapEod(raw: unknown, period: EodPeriod = "d"): Bar[] {
     const open = num(r.open), high = num(r.high), low = num(r.low), close = num(r.close);
     if (![time, open, high, low, close].every(Number.isFinite)) continue;
     const adj = num(r.adjusted_close);
-    const ratio = Number.isFinite(adj) && adj > 0 && close > 0 ? adj / close : 1;
+    const ratio = adjusted && Number.isFinite(adj) && adj > 0 && close > 0 ? adj / close : 1;
     const vol = num(r.volume);
     if (period === "w") time = weekStart(time);
     else if (period === "m") time = monthStart(time);

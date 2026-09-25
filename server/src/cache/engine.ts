@@ -57,9 +57,19 @@ export interface BarCacheSettings {
   intradayHistoryTtlSec: number;
 }
 
+/** Fetches raw (split/dividend-unadjusted) EOD bars; same signature as `EodhdClient.eod`. */
+export type UnadjustedEodFn = (symbol: string, from?: string, to?: string, period?: EodPeriod) => Promise<Bar[]>;
+
+/** Storage key in bars_daily(.tf) for a daily-kind timeframe: adjusted bars keep the plain tf ("1D"), raw ones get ":raw". */
+export function dailyKey(tf: Timeframe, adjusted: boolean): string {
+  return adjusted ? tf : `${tf}:raw`;
+}
+
 export interface BarCacheDeps {
   db: Database;
   client: Pick<EodhdClient, "eod" | "intraday">;
+  /** Source for `adjusted = false` daily/weekly/monthly bars. Without it, unadjusted requests fall back to adjusted data. */
+  unadjustedEod?: UnadjustedEodFn;
   settings: BarCacheSettings;
   /** Unix seconds. */
   now?: () => number;
@@ -88,6 +98,7 @@ export function tailFrom(lastTime: number, period: EodPeriod): number {
 export class BarCache {
   private readonly db: Database;
   private readonly client: BarCacheDeps["client"];
+  private readonly unadjustedEod: UnadjustedEodFn | undefined;
   private readonly settings: BarCacheSettings;
   private readonly now: () => number;
   private readonly log: (msg: string) => void;
@@ -100,6 +111,7 @@ export class BarCache {
   constructor(deps: BarCacheDeps) {
     this.db = deps.db;
     this.client = deps.client;
+    this.unadjustedEod = deps.unadjustedEod;
     this.settings = deps.settings;
     this.now = deps.now ?? (() => Math.floor(Date.now() / 1000));
     this.log = deps.log ?? ((m) => console.warn(`[bars] ${m}`));
@@ -116,7 +128,11 @@ export class BarCache {
     `);
   }
 
-  async getBars(symbolIn: string, tf: Timeframe, to?: number, limitIn = DEFAULT_LIMIT): Promise<BarsResponse> {
+  /**
+   * `adjusted` (default true) only affects 1D/1W/1M: false serves raw as-traded OHLCV, cached separately
+   * under `dailyKey(tf, false)` so both variants tail-refresh independently. Intraday ignores it.
+   */
+  async getBars(symbolIn: string, tf: Timeframe, to?: number, limitIn = DEFAULT_LIMIT, adjusted = true): Promise<BarsResponse> {
     const symbol = normalizeSymbol(symbolIn);
     const spec = TF_SPEC[tf];
     if (!spec) throw Object.assign(new Error(`unsupported timeframe ${tf}`), { status: 400 });
@@ -124,7 +140,7 @@ export class BarCache {
     const cutoff = to !== undefined && Number.isFinite(to) ? to : undefined;
     const res =
       spec.kind === "daily"
-        ? await this.dailyBars(symbol, tf, spec.period, cutoff, limit)
+        ? await this.dailyBars(symbol, dailyKey(tf, adjusted || !this.unadjustedEod), spec.period, cutoff, limit)
         : await this.intradayBars(symbol, spec.interval, spec.bucketSec, cutoff, limit);
     return { symbol, tf, ...res };
   }
@@ -139,7 +155,7 @@ export class BarCache {
 
   // ---------------- daily / weekly / monthly ----------------
 
-  private async dailyBars(symbol: string, tf: Timeframe, period: EodPeriod, to: number | undefined, limit: number) {
+  private async dailyBars(symbol: string, tf: string, period: EodPeriod, to: number | undefined, limit: number) {
     const meta = this.db
       .query<MetaRow, [string, string]>("SELECT fetched_at FROM bars_daily_meta WHERE symbol = ? AND tf = ?")
       .get(symbol, tf);
@@ -172,24 +188,30 @@ export class BarCache {
     return { bars, hasMore };
   }
 
-  private lastTime(symbol: string, tf: Timeframe): number | null {
+  private lastTime(symbol: string, tf: string): number | null {
     const r = this.db
       .query<{ t: number | null }, [string, string]>("SELECT MAX(time) AS t FROM bars_daily WHERE symbol = ? AND tf = ?")
       .get(symbol, tf);
     return r?.t ?? null;
   }
 
-  private async refreshDaily(symbol: string, tf: Timeframe, period: EodPeriod): Promise<void> {
+  /** Upstream fetch for a storage key: raw keys (":raw") use the unadjusted source. */
+  private fetchEod(symbol: string, tf: string, from: string | undefined, period: EodPeriod): Promise<Bar[]> {
+    if (tf.endsWith(":raw") && this.unadjustedEod) return this.unadjustedEod(symbol, from, undefined, period);
+    return this.client.eod(symbol, from, undefined, period);
+  }
+
+  private async refreshDaily(symbol: string, tf: string, period: EodPeriod): Promise<void> {
     const last = this.lastTime(symbol, tf);
-    if (last === null) return this.replaceDaily(symbol, tf, await this.client.eod(symbol, undefined, undefined, period));
+    if (last === null) return this.replaceDaily(symbol, tf, await this.fetchEod(symbol, tf, undefined, period));
 
     const from = tailFrom(last, period);
     // The first returned period may be partial (starts at `from`), so it is neither compared nor stored.
-    const tail = (await this.client.eod(symbol, isoDate(from), undefined, period)).filter((b) => b.time > from);
+    const tail = (await this.fetchEod(symbol, tf, isoDate(from), period)).filter((b) => b.time > from);
     if (this.adjustmentsChanged(symbol, tf, tail, last)) {
       // A split or dividend re-based the adjusted history: re-download everything.
       this.log(`${symbol} ${tf}: adjusted history changed upstream, refetching full history`);
-      return this.replaceDaily(symbol, tf, await this.client.eod(symbol, undefined, undefined, period));
+      return this.replaceDaily(symbol, tf, await this.fetchEod(symbol, tf, undefined, period));
     }
     this.db.transaction(() => {
       const ins = this.upsertStmt();
@@ -199,7 +221,7 @@ export class BarCache {
   }
 
   /** True when a cached, completed bar no longer matches upstream (the latest bar may legitimately differ). */
-  private adjustmentsChanged(symbol: string, tf: Timeframe, tail: Bar[], last: number): boolean {
+  private adjustmentsChanged(symbol: string, tf: string, tail: Bar[], last: number): boolean {
     const get = this.db.query<{ close: number }, [string, string, number]>(
       "SELECT close FROM bars_daily WHERE symbol = ? AND tf = ? AND time = ?",
     );
@@ -213,7 +235,7 @@ export class BarCache {
     return false;
   }
 
-  private replaceDaily(symbol: string, tf: Timeframe, bars: Bar[]): void {
+  private replaceDaily(symbol: string, tf: string, bars: Bar[]): void {
     this.db.transaction(() => {
       this.db.query("DELETE FROM bars_daily WHERE symbol = ? AND tf = ?").run(symbol, tf);
       const ins = this.upsertStmt();
@@ -228,7 +250,7 @@ export class BarCache {
     );
   }
 
-  private touchMeta(symbol: string, tf: Timeframe): void {
+  private touchMeta(symbol: string, tf: string): void {
     this.db
       .query("INSERT OR REPLACE INTO bars_daily_meta (symbol, tf, fetched_at) VALUES (?, ?, ?)")
       .run(symbol, tf, this.now());

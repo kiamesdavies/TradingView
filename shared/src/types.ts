@@ -103,6 +103,9 @@ export interface Layout {
   indicators: IndicatorConfig[];
   activeWatchlistId?: string;
   recentSymbols: Symbol[];
+  timezone?: string;
+  adjusted?: boolean;
+  priceScaleMode?: PriceScaleMode;
 }
 
 export interface Watchlist {
@@ -172,3 +175,203 @@ export type ServerMsg =
   | { type: "alert"; event: AlertEvent }
   | { type: "status"; upstream: "connected" | "disconnected" | "no_key"; detail?: string }
   | { type: "pong" };
+
+// ======================= v2: range bar, symbol details, screener =======================
+
+// Layout additions (all optional so v1 layouts stay valid):
+//   timezone?: IANA zone for the time axis + clock ("UTC" default, "exchange" = symbol's exchange zone)
+//   adjusted?: daily+ bars split/dividend adjusted (default true) — the ADJ toggle
+//   priceScaleMode?: "normal" | "log" | "percent" (supersedes logScale when set)
+export type PriceScaleMode = "normal" | "log" | "percent";
+export type RangePreset = "1D" | "5D" | "1M" | "3M" | "6M" | "YTD" | "1Y" | "5Y" | "All";
+
+// GET /api/bars?...&adj=0|1   (adj defaults to 1; only affects 1D/1W/1M)
+
+// ---------- Symbol details ----------
+// GET /api/symbols/:symbol/overview        -> SymbolOverview   (fundamentals cached 24h; quote live)
+// GET /api/symbols/:symbol/news?limit=20   -> NewsItem[]
+// GET /api/symbols/:symbol/events?from=<unix>&to=<unix> -> ChartEvent[]   (earnings, dividends, splits for chart markers)
+
+export type StatFormat = "number" | "money" | "pct" | "ratio" | "date" | "text" | "volume" | "days";
+
+export interface KeyStat {
+  key: string;
+  label: string;
+  value: number | string | null;
+  format: StatFormat;
+}
+
+export interface SymbolProfile {
+  symbol: Symbol;
+  name: string;
+  exchange: string;          // primary listing, e.g. "NYSE", "NASDAQ"
+  type: string;              // "Common Stock", "ETF", "Currency", ...
+  isEtf: boolean;
+  sector?: string;
+  industry?: string;
+  country?: string;
+  currency?: string;
+  description?: string;
+  website?: string;
+  logoUrl?: string;          // proxied: /api/symbols/:symbol/logo
+  ipoDate?: string;
+  employees?: number;
+}
+
+export interface ExtendedQuote {
+  session: "pre" | "post";
+  price: number;
+  change: number;            // vs regular-session last price
+  changePct: number;
+  time: UnixSeconds;
+}
+
+export interface EarningsPoint {
+  period: string;            // fiscal quarter end "2026-06-30"
+  reportDate?: string;       // "2026-08-05"
+  timing?: "BeforeMarket" | "AfterMarket";
+  epsActual: number | null;
+  epsEstimate: number | null;
+  surprisePct: number | null;
+  upcoming: boolean;
+}
+
+export interface RevenuePoint {
+  period: string;
+  revenue: number | null;
+}
+
+export interface SymbolOverview {
+  profile: SymbolProfile;
+  quote: Quote | null;
+  extended: ExtendedQuote | null;
+  /** Ordered: the first 4 are shown collapsed (next earnings, volume, avg volume 30D, market cap), the rest on expand. */
+  stats: KeyStat[];
+  nextEarnings: { date: string; timing?: "BeforeMarket" | "AfterMarket"; epsEstimate: number | null; daysUntil: number } | null;
+  earnings: EarningsPoint[];          // ascending, last 8 reported + upcoming
+  revenue: RevenuePoint[];            // ascending, last 8 quarters
+  analyst: {
+    rating: number | null;            // EODHD 1(sell)..5(strong buy)
+    targetPrice: number | null;
+    strongBuy: number; buy: number; hold: number; sell: number; strongSell: number;
+  } | null;
+  latestNews: NewsItem | null;
+  fundamentalsAsOf: UnixSeconds | null;
+}
+
+export interface NewsItem {
+  id: string;
+  title: string;
+  url: string;
+  source?: string;
+  publishedAt: UnixSeconds;
+  symbols: Symbol[];
+  sentiment?: number;        // -1..1 polarity
+  summary?: string;
+}
+
+export type ChartEventType = "earnings" | "dividend" | "split";
+export interface ChartEvent {
+  type: ChartEventType;
+  time: UnixSeconds;         // session date at 00:00 UTC
+  label: string;             // "E", "D", "S"
+  detail: string;            // tooltip text e.g. "EPS 0.50 vs 0.31 est (+61%)"
+  upcoming: boolean;
+}
+
+// ---------- Screener ----------
+// GET  /api/screener/meta                   -> ScreenerMeta
+// POST /api/screener/query  body ScreenerQuery -> ScreenerResponse
+// GET  /api/screener/presets                -> ScreenerPreset[]
+// POST /api/screener/presets body {name, query} -> ScreenerPreset
+// PUT  /api/screener/presets/:id body ScreenerPreset -> ScreenerPreset
+// DELETE /api/screener/presets/:id          -> { ok: true }
+// GET  /api/universe/status                 -> UniverseStatus
+// POST /api/universe/jobs/:name/run         -> { ok: true }     (localhost / admin-token guarded like /api/config)
+
+export type ScreenerGroup = "descriptive" | "fundamental" | "technical" | "news" | "etf";
+
+export interface ScreenerOption {
+  value: string;             // opaque id, e.g. "o10", "u5", "pos", "sp500", "nyse"
+  label: string;             // "Over 10", "Under 5", "Positive (>0%)"
+}
+
+export interface ScreenerFilterDef {
+  id: string;                // "pe", "sma50", "sector", ...
+  label: string;             // "P/E", "50-Day Simple Moving Average"
+  group: ScreenerGroup;
+  options: ScreenerOption[]; // "Any" is implicit (no filter), not listed
+  /** When set, the UI offers "Custom…" with min/max inputs in this unit. */
+  custom?: { unit: "number" | "pct" | "money" | "date" | "volume" };
+  appliesTo: "stock" | "etf" | "all";
+  /** Filters whose data is not available on the user's EODHD plan / not yet collected are shown disabled. */
+  available: boolean;
+  unavailableReason?: string;
+}
+
+export type ScreenerFilterValue =
+  | { id: string; value: string }
+  | { id: string; min?: number | string; max?: number | string };
+
+export interface ScreenerQuery {
+  filters: ScreenerFilterValue[];
+  universe: "stocks" | "etfs" | "all";
+  tickers?: string;          // optional "AAPL, MSFT" restriction
+  view: string;              // ScreenerView id
+  sort: { column: string; dir: "asc" | "desc" };
+  offset: number;
+  limit: number;             // max 500
+}
+
+export interface ScreenerColumnDef {
+  id: string;                // "ticker", "company", "sector", "market_cap", "pe", "price", "change_pct", "volume", ...
+  label: string;
+  format: StatFormat;
+  align: "left" | "right";
+}
+
+export interface ScreenerView {
+  id: string;                // "overview" | "valuation" | "financial" | "ownership" | "performance" | "technical" | "etf"
+  label: string;
+  columns: string[];         // ScreenerColumnDef ids
+}
+
+export interface ScreenerMeta {
+  filters: ScreenerFilterDef[];
+  columns: ScreenerColumnDef[];
+  views: ScreenerView[];
+  universe: UniverseStatus;
+}
+
+export interface ScreenerResponse {
+  total: number;
+  /** Each row has "symbol" plus one key per column of the requested view. */
+  rows: Array<Record<string, number | string | null>>;
+  asOf: string | null;       // last price date in the universe
+}
+
+export interface ScreenerPreset {
+  id: string;
+  name: string;
+  query: Omit<ScreenerQuery, "offset" | "limit">;
+}
+
+export interface UniverseJobStatus {
+  name: string;              // "symbols" | "prices" | "backfill" | "fundamentals" | "indices" | "earnings" | "news" | "metrics"
+  state: "idle" | "running" | "error" | "disabled";
+  lastRunAt: UnixSeconds | null;
+  lastError: string | null;
+  progress: string | null;   // "1520/6031"
+  nextRunAt: UnixSeconds | null;
+}
+
+export interface UniverseStatus {
+  symbols: number;           // stocks + ETFs tracked
+  withPrices: number;
+  withFundamentals: number;
+  lastPriceDate: string | null;
+  historyDays: number;       // distinct dates of price history stored
+  creditsUsedToday: number;
+  dailyCreditBudget: number;
+  jobs: UniverseJobStatus[];
+}

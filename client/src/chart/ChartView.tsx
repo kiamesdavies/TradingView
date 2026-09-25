@@ -10,7 +10,11 @@ import {
   LineStyle,
   PriceScaleMode,
   createChart,
+  createSeriesMarkers,
   type HistogramData,
+  type ISeriesMarkersPluginApi,
+  type SeriesMarker,
+  type TickMarkType,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
@@ -21,11 +25,14 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import type { Bar, ChartType, Theme } from "@eodview/shared";
+import type { Bar, ChartEvent, ChartType, PriceScaleMode as ScaleModeSetting, Symbol, Theme } from "@eodview/shared";
 import { ApiRequestError, api } from "../api/http";
 import { wsClient } from "../api/ws";
 import { useStore } from "../state/store";
 import { findBarIndex, heikinAshiStep, isIntraday, timeAtLogical, toHeikinAshi } from "./candles";
+import { buildEventMarkers, eventsSupported, eventTitle, type EventMarker } from "./events";
+import { centeredRange, logicalRangeForTimes } from "./ranges";
+import { exchangeTimeZone, formatCrosshairTime, formatTickMark, resolveTimeZone } from "./timezone";
 import { BarsController } from "./datafeed";
 import { formatPrice, pricePrecision } from "./format";
 import { ChartLegend, LegendSource } from "./ChartLegend";
@@ -57,6 +64,21 @@ interface LoadState {
   loading: boolean;
   error: { message: string; detail?: string; needsKey: boolean } | null;
 }
+
+interface EventTip {
+  x: number;
+  y: number;
+  items: { key: string; color: string; title: string; detail: string }[];
+}
+
+/** How far ahead to ask for events (upcoming earnings). */
+const EVENTS_LOOKAHEAD = 90 * 86_400;
+
+const SCALE_MODES: Record<ScaleModeSetting, PriceScaleMode> = {
+  normal: PriceScaleMode.Normal,
+  log: PriceScaleMode.Logarithmic,
+  percent: PriceScaleMode.Percentage,
+};
 
 interface MenuState {
   x: number;
@@ -167,6 +189,9 @@ export function ChartView(props: { onReady?: (h: ChartHandle) => void }) {
   const chartType = useStore((s) => s.layout.chartType);
   const theme = useStore((s) => s.layout.theme);
   const logScale = useStore((s) => s.layout.logScale);
+  const scaleSetting = useStore((s) => s.layout.priceScaleMode);
+  const adjusted = useStore((s) => s.layout.adjusted ?? true);
+  const tzSetting = useStore((s) => s.layout.timezone);
   const alerts = useStore((s) => s.alerts);
   const createAlert = useStore((s) => s.createAlert);
   const setUi = useStore((s) => s.setUi);
@@ -184,6 +209,8 @@ export function ChartView(props: { onReady?: (h: ChartHandle) => void }) {
   const [precision, setPrecision] = useState(2);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [events, setEvents] = useState<{ symbol: Symbol; list: ChartEvent[] }>({ symbol: "", list: [] });
+  const [eventTip, setEventTip] = useState<EventTip | null>(null);
 
   // Mutable mirrors read from chart callbacks (avoid re-subscribing on every render).
   const onReadyRef = useRef(props.onReady);
@@ -196,6 +223,11 @@ export function ChartView(props: { onReady?: (h: ChartHandle) => void }) {
   const formatListeners = useRef(new Set<(format: PriceFormat) => void>()).current;
   /** Renders a controller change into the current series; replaced whenever core/main change. */
   const renderRef = useRef<((bars: Bar[], kind: BarsChangeKind) => void) | null>(null);
+  /** Recomputes event markers after bars change; set by the markers effect. */
+  const markersRef = useRef<((bars: Bar[], kind: BarsChangeKind) => void) | null>(null);
+  const markerById = useRef(new Map<string, EventMarker>());
+  const markersByTime = useRef(new Map<number, EventMarker[]>());
+  const eventsFromRef = useRef<{ symbol: Symbol; from: number } | null>(null);
 
   // --- chart lifetime ---
   useEffect(() => {
@@ -205,7 +237,13 @@ export function ChartView(props: { onReady?: (h: ChartHandle) => void }) {
     const chart = createChart(el, {
       ...chartOptions(p),
       autoSize: true,
-      timeScale: { borderColor: p.border, rightOffset: RIGHT_OFFSET, timeVisible: isIntraday(controller.tf), secondsVisible: false },
+      timeScale: {
+        borderColor: p.border,
+        rightOffset: RIGHT_OFFSET,
+        timeVisible: isIntraday(controller.tf),
+        secondsVisible: false,
+        minBarSpacing: 0.2,
+      },
     });
     const volume = chart.addSeries(
       HistogramSeries,
@@ -217,7 +255,9 @@ export function ChartView(props: { onReady?: (h: ChartHandle) => void }) {
     return () => {
       setCore(null);
       setMain(null);
-      chart.remove();
+      // Remove after the other unmount cleanups (main series, indicator and drawing layers) have run: they still
+      // call into the chart, and doing so on a removed chart schedules a redraw that throws "Object is disposed".
+      queueMicrotask(() => chart.remove());
     };
   }, [controller]);
 
@@ -225,6 +265,7 @@ export function ChartView(props: { onReady?: (h: ChartHandle) => void }) {
   useEffect(() => {
     return controller.onChange((bars, kind) => {
       renderRef.current?.(bars, kind);
+      markersRef.current?.(bars, kind);
       legend.refresh(bars);
       for (const cb of [...consumers]) {
         try {
@@ -266,6 +307,22 @@ export function ChartView(props: { onReady?: (h: ChartHandle) => void }) {
     const timeScale = chart.timeScale();
     let ha: Bar[] = [];
     let renderedFirst: number | null = null;
+
+    // lightweight-charts applies setVisibleLogicalRange on its next animation frame, and until then
+    // getVisibleLogicalRange() (and range events fired by setData) still report the old viewport. Remember the
+    // range we asked for so a backfill/prepend landing in the same frame builds on it instead of the stale one
+    // (otherwise a range preset right after a timeframe switch was overwritten and the whole history shown).
+    let pendingRange: LogicalRange | null = null;
+    let pendingFrame = 0;
+    const setRange = (r: LogicalRange) => {
+      pendingRange = r;
+      cancelAnimationFrame(pendingFrame);
+      pendingFrame = requestAnimationFrame(() => {
+        pendingRange = null;
+      });
+      timeScale.setVisibleLogicalRange(r);
+    };
+    const currentRange = (): LogicalRange | null => pendingRange ?? timeScale.getVisibleLogicalRange();
 
     const setAll = (bars: Bar[]) => {
       const p = palRef.current;
@@ -321,23 +378,26 @@ export function ChartView(props: { onReady?: (h: ChartHandle) => void }) {
         return;
       }
       if (kind === "reset") {
+        const n = bars.length;
+        const target = n > INITIAL_VISIBLE_BARS ? ({ from: n - INITIAL_VISIBLE_BARS, to: n - 1 + RIGHT_OFFSET } as LogicalRange) : null;
+        // Set before setData: the range event it fires still carries the previous timeframe's viewport.
+        pendingRange = target;
         setAll(bars);
         chart.applyOptions({ timeScale: { timeVisible: isIntraday(controller.tf) } });
-        if (bars.length) {
+        if (n) {
           applyPrecision(bars);
-          const n = bars.length;
-          if (n > INITIAL_VISIBLE_BARS) timeScale.setVisibleLogicalRange({ from: n - INITIAL_VISIBLE_BARS, to: n - 1 + RIGHT_OFFSET });
+          if (target) setRange(target);
           else timeScale.fitContent();
         }
         return;
       }
       if (kind === "prepend") {
         // Keep the viewport on the same bars: shift by however many bars appeared in front of the old first bar.
-        const before = timeScale.getVisibleLogicalRange();
+        const before = currentRange();
         const oldFirst = renderedFirst;
         setAll(bars);
         const shift = oldFirst === null ? 0 : Math.max(0, findBarIndex(bars, oldFirst));
-        if (before && shift > 0) timeScale.setVisibleLogicalRange({ from: before.from + shift, to: before.to + shift });
+        if (before && shift > 0) setRange({ from: before.from + shift, to: before.to + shift } as LogicalRange);
         return;
       }
       // initial: new series over existing data, viewport untouched
@@ -347,7 +407,8 @@ export function ChartView(props: { onReady?: (h: ChartHandle) => void }) {
     renderRef.current = render;
     render(controller.bars, "initial");
 
-    const onRange = (range: LogicalRange | null) => {
+    const onRange = (reported: LogicalRange | null) => {
+      const range = pendingRange ?? reported;
       if (!range || range.from >= BACKFILL_THRESHOLD) return;
       if (!controller.hasMore || controller.isLoadingOlder) return;
       void controller.loadOlder();
@@ -386,10 +447,29 @@ export function ChartView(props: { onReady?: (h: ChartHandle) => void }) {
         const time = timeAtLogical(controller.bars, logical, controller.tf);
         return time === null ? null : { time, price };
       },
+      getSymbol: () => controller.symbol,
+      getTimeframe: () => controller.tf,
+      whenLoaded: (tf) => controller.whenLoaded(useStore.getState().layout.symbol, tf),
+      ensureHistory: (fromTime, maxPages) => controller.ensureHistory(fromTime, maxPages),
+      setVisibleTimeRange: (from, to) => {
+        const r = logicalRangeForTimes(controller.bars, from, to);
+        if (r) setRange(r as LogicalRange);
+      },
+      scrollToTime: (time) => {
+        const cur = currentRange();
+        const width = cur ? cur.to - cur.from : INITIAL_VISIBLE_BARS;
+        const r = centeredRange(controller.bars, time, width);
+        if (r) setRange(r as LogicalRange);
+      },
+      fitContent: () => {
+        pendingRange = null;
+        timeScale.fitContent();
+      },
     };
     onReadyRef.current?.(handle);
 
     return () => {
+      cancelAnimationFrame(pendingFrame);
       if (renderRef.current === render) renderRef.current = null;
       timeScale.unsubscribeVisibleLogicalRangeChange(onRange);
       chart.unsubscribeCrosshairMove(onCrosshair);
@@ -404,18 +484,36 @@ export function ChartView(props: { onReady?: (h: ChartHandle) => void }) {
     if (bars.length) core.volume.setData(bars.map((b) => volumePoint(b, pal)));
   }, [core, pal, controller]);
 
-  // --- log scale ---
+  // --- price scale mode (priceScaleMode supersedes the v1 logScale flag) ---
+  const scaleMode: ScaleModeSetting = scaleSetting ?? (logScale ? "log" : "normal");
   useEffect(() => {
     if (!main) return;
-    main.api.priceScale().applyOptions({ mode: logScale ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal });
-  }, [main, logScale]);
+    main.api.priceScale().applyOptions({ mode: SCALE_MODES[scaleMode] ?? PriceScaleMode.Normal });
+  }, [main, scaleMode]);
 
-  // --- bar loading ---
+  // --- time zone: axis ticks + crosshair label ---
+  const tz = resolveTimeZone(tzSetting, symbol);
+  const intradayTf = isIntraday(tf);
+  useEffect(() => {
+    if (!core) return;
+    core.chart.applyOptions({
+      localization: {
+        timeFormatter: (time: Time) => (typeof time === "number" ? formatCrosshairTime(time, tz, intradayTf) : String(time)),
+      },
+      timeScale: {
+        tickMarkFormatter: (time: Time, type: TickMarkType) =>
+          typeof time === "number" ? formatTickMark(time, type, tz, intradayTf) : null,
+      },
+    });
+  }, [core, tz, intradayTf]);
+
+  // --- bar loading (the ADJ toggle only matters for daily+) ---
+  const adjKey = intradayTf ? true : adjusted;
   useEffect(() => {
     let cancelled = false;
     setLoad({ loading: true, error: null });
     setMenu(null);
-    controller.load(symbol, tf).then(
+    controller.load(symbol, tf, adjKey).then(
       (current) => {
         if (!cancelled && current) setLoad({ loading: false, error: null });
       },
@@ -428,7 +526,7 @@ export function ChartView(props: { onReady?: (h: ChartHandle) => void }) {
     return () => {
       cancelled = true;
     };
-  }, [controller, symbol, tf, reloadNonce]);
+  }, [controller, symbol, tf, adjKey, reloadNonce]);
 
   // Retry automatically once the user fixes the key (settings dialog closed / upstream came up).
   const errorRef = useRef(load.error);
@@ -469,6 +567,146 @@ export function ChartView(props: { onReady?: (h: ChartHandle) => void }) {
       release();
     };
   }, [controller, symbol]);
+
+  // --- chart events (earnings / dividends / splits): fetch for the loaded span, widen after backfill ---
+  useEffect(() => {
+    setEvents({ symbol, list: [] });
+    setEventTip(null);
+    eventsFromRef.current = null;
+    if (!eventsSupported(symbol)) return;
+    let cancelled = false;
+    let inflight = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const maybeFetch = () => {
+      const bars = controller.bars;
+      if (cancelled || inflight || bars.length === 0 || controller.symbol !== symbol) return;
+      const oldest = bars[0]!.time;
+      const have = eventsFromRef.current;
+      if (have && have.symbol === symbol && have.from <= oldest) return;
+      const from = oldest - 31 * 86_400; // cover the whole first week/month bucket
+      const to = Math.floor(Date.now() / 1000) + EVENTS_LOOKAHEAD;
+      inflight = true;
+      api
+        .get<ChartEvent[]>(`/symbols/${encodeURIComponent(symbol)}/events?from=${from}&to=${to}`)
+        .then(
+          (list) => {
+            if (cancelled) return;
+            eventsFromRef.current = { symbol, from };
+            setEvents({ symbol, list: Array.isArray(list) ? list : [] });
+          },
+          (e: unknown) => {
+            if (cancelled) return;
+            eventsFromRef.current = { symbol, from }; // don't retry on every bar change
+            console.warn("[chart] events unavailable", e);
+          },
+        )
+        .finally(() => {
+          inflight = false;
+        });
+    };
+    const schedule = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(maybeFetch, 300);
+    };
+    schedule();
+    const off = controller.onChange((bars, kind) => {
+      if (kind !== "update" && bars.length > 0) schedule();
+    });
+    return () => {
+      cancelled = true;
+      off();
+      if (timer) clearTimeout(timer);
+    };
+  }, [controller, symbol]);
+
+  // --- event markers on the main series (re-created with the series; recomputed after reset/backfill/new bar) ---
+  useEffect(() => {
+    if (!main) return;
+    const plugin: ISeriesMarkersPluginApi<Time> = createSeriesMarkers(main.api, []);
+    let lastLen = -1;
+    let lastFirst: number | null = null;
+    const apply = (bars: Bar[]) => {
+      const list = events.symbol === controller.symbol ? events.list : [];
+      const ms = buildEventMarkers(list, bars, controller.tf, {
+        tz: exchangeTimeZone(controller.symbol),
+        now: Math.floor(Date.now() / 1000),
+      });
+      markerById.current = new Map(ms.map((m) => [m.id, m]));
+      const byTime = new Map<number, EventMarker[]>();
+      for (const m of ms) byTime.set(m.time, [...(byTime.get(m.time) ?? []), m]);
+      markersByTime.current = byTime;
+      const out: SeriesMarker<Time>[] = ms.map((m) => ({
+        id: m.id,
+        time: ts(m.time),
+        position: m.position,
+        shape: m.shape,
+        color: m.color,
+        text: m.text,
+        size: m.size,
+      }));
+      try {
+        plugin.setMarkers(out);
+      } catch (e) {
+        console.warn("[chart] could not set event markers", e);
+      }
+      lastLen = bars.length;
+      lastFirst = bars.length ? bars[0]!.time : null;
+    };
+    apply(controller.bars);
+    markersRef.current = (bars, kind) => {
+      if (kind === "update" && bars.length === lastLen && (bars[0]?.time ?? null) === lastFirst) return;
+      apply(bars);
+    };
+    return () => {
+      markersRef.current = null;
+      markerById.current = new Map();
+      markersByTime.current = new Map();
+      try {
+        plugin.detach();
+      } catch {
+        // series already removed
+      }
+    };
+  }, [main, events, controller]);
+
+  // --- event marker tooltip ---
+  useEffect(() => {
+    if (!core || !main) return;
+    const onMove = (param: MouseEventParams<Time>) => {
+      if (!param.point || markerById.current.size === 0) {
+        setEventTip((prev) => (prev ? null : prev));
+        return;
+      }
+      let hits: EventMarker[] = [];
+      const info = param.hoveredInfo;
+      const id = info && info.objectKind === "series-marker" ? info.objectId : param.hoveredObjectId;
+      const byId = typeof id === "string" ? markerById.current.get(id) : undefined;
+      if (byId) hits = markersByTime.current.get(byId.time) ?? [byId];
+      else if (typeof param.time === "number") {
+        // Fallback hit test: markers sit below the bar's low.
+        const atBar = markersByTime.current.get(param.time);
+        const bar = atBar ? controller.bars[findBarIndex(controller.bars, param.time)] : undefined;
+        const yLow = bar ? main.api.priceToCoordinate(bar.low) : null;
+        if (atBar && yLow !== null && param.point.y > yLow + 2 && param.point.y < yLow + 16 + 22 * atBar.length) hits = atBar;
+      }
+      if (hits.length === 0) {
+        setEventTip((prev) => (prev ? null : prev));
+        return;
+      }
+      const x = param.point.x;
+      const y = param.point.y;
+      setEventTip({
+        x,
+        y,
+        items: hits.map((m) => ({ key: m.id, color: m.color, title: eventTitle(m.event), detail: m.event.detail })),
+      });
+    };
+    core.chart.subscribeCrosshairMove(onMove);
+    return () => {
+      core.chart.unsubscribeCrosshairMove(onMove);
+      setEventTip(null);
+    };
+  }, [core, main, controller]);
 
   // --- alert price lines ---
   useEffect(() => {
@@ -608,6 +846,26 @@ export function ChartView(props: { onReady?: (h: ChartHandle) => void }) {
           <button type="button" role="menuitem" className="ev-chart-menu-item" onClick={() => void copyPrice(menu.price)}>
             Copy price
           </button>
+        </div>
+      )}
+      {eventTip && (
+        <div
+          className="ev-chart-evtip"
+          role="tooltip"
+          style={{
+            left: Math.max(4, Math.min(eventTip.x + 14, (containerRef.current?.clientWidth ?? 9999) - 274)),
+            top: Math.max(4, Math.min(eventTip.y + 14, (containerRef.current?.clientHeight ?? 9999) - 24 - 46 * eventTip.items.length)),
+          }}
+        >
+          {eventTip.items.map((it) => (
+            <div key={it.key} className="ev-chart-evtip-item">
+              <div className="ev-chart-evtip-title">
+                <span className="ev-chart-evtip-dot" style={{ background: it.color }} />
+                {it.title}
+              </div>
+              {it.detail && <div className="ev-chart-evtip-detail">{it.detail}</div>}
+            </div>
+          ))}
         </div>
       )}
       {notice && <div className="ev-chart-notice">{notice}</div>}

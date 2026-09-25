@@ -28,6 +28,8 @@ export interface EodhdClient {
   intraday(symbol: string, interval: IntradayInterval, fromUnix?: number, toUnix?: number): Promise<Bar[]>;
   realtime(symbols: string[]): Promise<Quote[]>;
   user(): Promise<EodhdUser>;
+  /** Unmapped GET for endpoints without a dedicated method (fundamentals, news, calendar, bulk, logos…). `path` starts with "/". */
+  raw(path: string, params?: Record<string, QueryValue>, what?: string): Promise<unknown>;
 }
 
 export function createEodhdClient(getKey: () => string | null, fetchFn: FetchFn = fetch): EodhdClient {
@@ -77,6 +79,10 @@ export function createEodhdClient(getKey: () => string | null, fetchFn: FetchFn 
 
     async user() {
       return mapUser(await get("/user", {}, "user info"));
+    },
+
+    raw(path, params = {}, what = path) {
+      return get(path, params, what);
     },
   };
 }

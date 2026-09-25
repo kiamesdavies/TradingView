@@ -170,3 +170,276 @@
   font-size: 12px;
   pointer-events: none;
 }
+
+/* ---------- event marker tooltip ---------- */
+
+.ev-chart-evtip {
+  position: absolute;
+  z-index: 7;
+  max-width: 260px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--ev-chart-border);
+  background: var(--ev-chart-panel);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+.ev-chart-evtip-item + .ev-chart-evtip-item {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--ev-chart-border);
+}
+
+.ev-chart-evtip-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.ev-chart-evtip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.ev-chart-evtip-detail {
+  margin-top: 2px;
+  color: var(--ev-chart-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- range bar (below the chart; uses the app shell theme tokens) ---------- */
+
+.ev-rangebar {
+  position: relative;
+  flex: 0 0 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 12px;
+  user-select: none;
+  min-width: 0;
+}
+
+.ev-rb-group {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.ev-rb-spacer {
+  flex: 1 1 auto;
+}
+
+.ev-rb-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--border);
+  flex: none;
+}
+
+.ev-rb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  min-width: 26px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: var(--radius, 4px);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  flex: none;
+}
+
+.ev-rb-btn:hover:not(:disabled),
+.ev-rb-btn.open {
+  background: var(--bg-hover);
+}
+
+.ev-rb-btn.active {
+  color: var(--accent);
+}
+
+.ev-rb-btn:disabled {
+  color: var(--muted);
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ev-rb-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.ev-rb-btn.busy {
+  animation: ev-rb-pulse 1s ease-in-out infinite;
+}
+
+@keyframes ev-rb-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.ev-rb-icon {
+  padding: 0 4px;
+}
+
+.ev-rb-clock {
+  font-variant-numeric: tabular-nums;
+}
+
+.ev-rb-pop {
+  position: absolute;
+  bottom: 38px;
+  z-index: 30;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-elev);
+  box-shadow: var(--shadow);
+  color: var(--text);
+}
+
+.ev-rb-goto {
+  left: 6px;
+  width: 240px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ev-rb-pop-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.ev-rb-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.ev-rb-field input {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius, 4px);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.ev-rb-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.ev-rb-error {
+  color: var(--down);
+  font-size: 12px;
+}
+
+.ev-rb-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.ev-rb-primary {
+  height: 28px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--radius, 4px);
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ev-rb-primary:hover {
+  background: var(--accent-hover);
+}
+
+.ev-rb-link {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ev-rb-tzmenu {
+  right: 150px;
+  width: 280px;
+  max-height: min(420px, 70vh);
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.ev-rb-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: 6px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ev-rb-menu-item:hover,
+.ev-rb-menu-item:focus-visible {
+  background: var(--bg-hover);
+  outline: none;
+}
+
+.ev-rb-menu-item.selected {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.ev-rb-menu-detail {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.ev-rb-menu-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
+}
+
+@media (max-width: 720px) {
+  .ev-rb-clock {
+    display: none;
+  }
+}

@@ -82,7 +82,9 @@ export function register(router: Router): void {
     const to = parseIntParam(url.searchParams.get("to"), "to");
     const limitRaw = parseIntParam(url.searchParams.get("limit"), "limit") ?? DEFAULT_LIMIT;
     const limit = Math.max(1, Math.min(MAX_LIMIT, limitRaw));
-    return json(await getBars(symbol, tf, to, limit));
+    const adjRaw = url.searchParams.get("adj");
+    if (adjRaw !== null && adjRaw !== "" && adjRaw !== "0" && adjRaw !== "1") throw new HttpError(400, "adj must be 0 or 1");
+    return json(await getBars(symbol, tf, to, limit, adjRaw !== "0"));
   });
 
   router.get("/api/quotes", async (_req, _p, url) => {

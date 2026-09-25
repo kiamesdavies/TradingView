@@ -189,3 +189,66 @@ describe("format", () => {
     expect(pricePrecision("X.US", [])).toBe(2);
   });
 });
+
+describe("BarsController v2", () => {
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  test("load passes adj; fetchBars only sends it for daily+", async () => {
+    const seen: (boolean | undefined)[] = [];
+    const c = new BarsController(async (symbol, tf, _to, _limit, adj) => {
+      seen.push(adj);
+      return res(symbol, tf, [bar(1)], false);
+    });
+    await c.load("AAPL.US", "1D", false);
+    expect(seen).toEqual([false]);
+    expect(c.adjusted).toBe(false);
+  });
+
+  test("whenLoaded resolves after the matching load, false on failure", async () => {
+    const { calls, fetcher } = manualFetcher();
+    const c = new BarsController(fetcher);
+    const w = c.whenLoaded("AAPL.US", "1h");
+    const p = c.load("AAPL.US", "1h");
+    calls[0]!.resolve(res("AAPL.US", "1h", [bar(1)]));
+    await p;
+    expect(await w).toBe(true);
+    expect(await c.whenLoaded("AAPL.US", "1h")).toBe(true); // already loaded
+
+    const w2 = c.whenLoaded("AAPL.US", "5m");
+    const p2 = c.load("AAPL.US", "5m").catch(() => false);
+    calls[1]!.reject(new Error("boom"));
+    await p2;
+    expect(await w2).toBe(false);
+  });
+
+  test("ensureHistory pages back until covered, waiting for in-flight backfill", async () => {
+    const { calls, fetcher } = manualFetcher();
+    const c = new BarsController(fetcher);
+    const p = c.load("AAPL.US", "1D");
+    calls[0]!.resolve(res("AAPL.US", "1D", [bar(300), bar(400)]));
+    await p;
+    void c.loadOlder(); // a scroll-triggered backfill is already running
+    const e = c.ensureHistory(100);
+    calls[1]!.resolve(res("AAPL.US", "1D", [bar(200), bar(250)]));
+    await tick();
+    await tick();
+    expect(calls.length).toBe(3);
+    expect(calls[2]!.to).toBe(200);
+    calls[2]!.resolve(res("AAPL.US", "1D", [bar(50), bar(150)]));
+    expect(await e).toBe(true);
+    expect(c.bars.map((b) => b.time)).toEqual([50, 150, 200, 250, 300, 400]);
+  });
+
+  test("ensureHistory stops when history runs out", async () => {
+    const { calls, fetcher } = manualFetcher();
+    const c = new BarsController(fetcher);
+    const p = c.load("AAPL.US", "1M");
+    calls[0]!.resolve(res("AAPL.US", "1M", [bar(300)]));
+    await p;
+    const e = c.ensureHistory(-Infinity);
+    await tick();
+    calls[1]!.resolve(res("AAPL.US", "1M", [bar(100)], false));
+    expect(await e).toBe(true);
+    expect(calls.length).toBe(2);
+  });
+});
