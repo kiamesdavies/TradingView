@@ -128,3 +128,7 @@ bun run typecheck      # tsc for server and client
 ```
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+[MIT](LICENSE)
