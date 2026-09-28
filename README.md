@@ -1,5 +1,8 @@
 # EODView
 
+[![CI](https://github.com/kiamesdavies/TradingView/actions/workflows/ci.yml/badge.svg)](https://github.com/kiamesdavies/TradingView/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **A self-hosted TradingView and Finviz alternative powered by your own [EODHD](https://eodhd.com) data subscription.**
 
 Charts with live candles, indicators and drawings, a Finviz-style multi-market stock screener, a TradingView-style
