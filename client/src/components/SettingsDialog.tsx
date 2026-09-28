@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { ApiTokenView, ConfigView, DeploymentInfo } from "@eodview/shared";
 import { api } from "../api/http";
 import { connectCommands } from "./connectInfo";
+import { clearAdminToken, loadAdminToken, saveAdminToken } from "./adminToken";
 import { ApiRequestError } from "../api/http";
 import { claudeMcpAddCommand, isLoopbackHost, mcpUrl, serverOrigin, TOKEN_ENV } from "../screener/apiLinks";
 import { copyText, tokensApi, type CreatedToken } from "../screener/tokensApi";
@@ -41,7 +42,11 @@ function SettingsDialogInner() {
   const notice = useShell((s) => s.settingsNotice);
   const [key, setKey] = useState("");
   const [showKey, setShowKey] = useState(false);
-  const [adminToken, setAdminToken] = useState("");
+  // `adminToken` is the unlocked (verified) token; `tokenInput` is what the user is typing.
+  const [adminToken, setAdminToken] = useState(() => loadAdminToken() ?? "");
+  const [tokenInput, setTokenInput] = useState("");
+  const [unlocking, setUnlocking] = useState(false);
+  const [tokenError, setTokenError] = useState<string | null>(null);
   const [needsToken, setNeedsToken] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,22 +58,63 @@ function SettingsDialogInner() {
     useShell.setState({ settingsNotice: null });
   };
 
-  // Refresh the config view whenever the dialog opens.
+  // Refresh the config view whenever the dialog opens (with the saved admin token, if any).
   useEffect(() => {
     let cancelled = false;
+    const saved = loadAdminToken() ?? undefined;
     configApi
-      .get()
-      .then((c) => !cancelled && useShell.getState().setConfig(c))
+      .get(saved)
+      .then((c) => {
+        if (cancelled) return;
+        useShell.getState().setConfig(c);
+        setLoadError(null);
+      })
       .catch((e: unknown) => {
         if (cancelled) return;
         const d = describeError(e);
-        if (d.forbidden) setNeedsToken(true);
-        setLoadError(d.forbidden ? "Current configuration is only visible from localhost or with the admin token." : d.message);
+        if (d.forbidden) {
+          if (saved) {
+            clearAdminToken(); // saved token no longer valid (rotated)
+            setAdminToken("");
+          }
+          setNeedsToken(true);
+        }
+        setLoadError(d.forbidden ? "Locked. Enter the admin token to view and change the configuration." : d.message);
       });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  const unlock = async (e?: FormEvent) => {
+    e?.preventDefault();
+    const t = tokenInput.trim();
+    if (!t) return;
+    setUnlocking(true);
+    setTokenError(null);
+    try {
+      const c = await configApi.get(t);
+      saveAdminToken(t);
+      setAdminToken(t);
+      setTokenInput("");
+      setNeedsToken(false);
+      setLoadError(null);
+      useShell.getState().setConfig(c);
+    } catch (err) {
+      const d = describeError(err);
+      setTokenError(d.forbidden ? "Admin token rejected." : d.message);
+    } finally {
+      setUnlocking(false);
+    }
+  };
+
+  const forget = () => {
+    clearAdminToken();
+    setAdminToken("");
+    setNeedsToken(true);
+    useShell.getState().setConfig(null);
+    setLoadError("Locked. Enter the admin token to view and change the configuration.");
+  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -81,7 +127,7 @@ function SettingsDialogInner() {
     setError(null);
     setSaved(false);
     try {
-      const view = await configApi.setKey(apiKey, adminToken.trim() || undefined);
+      const view = await configApi.setKey(apiKey, adminToken || undefined);
       useShell.getState().setConfig(view);
       useShell.setState({ settingsNotice: null });
       setKey("");
@@ -151,9 +197,37 @@ function SettingsDialogInner() {
               </>
             )}
           </dl>
+          {needsToken && !adminToken && (
+            <form className="unlock-row" onSubmit={unlock}>
+              <input
+                className="input mono"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="Admin token (EODVIEW_ADMIN_TOKEN)"
+                value={tokenInput}
+                onChange={(e) => {
+                  setTokenInput(e.target.value);
+                  setTokenError(null);
+                }}
+              />
+              <button type="submit" className="btn btn-primary" disabled={unlocking || !tokenInput.trim()}>
+                {unlocking ? "Checking…" : "Unlock"}
+              </button>
+            </form>
+          )}
+          {tokenError && <div className="error-text" role="alert">{tokenError}</div>}
+          {adminToken && (
+            <p className="hint">
+              Unlocked with the admin token saved in this browser.{" "}
+              <button type="button" className="link-btn" onClick={forget}>
+                Forget
+              </button>
+            </p>
+          )}
         </section>
 
-        <ApiAccessSection adminToken={adminToken.trim() || undefined} onForbidden={() => setNeedsToken(true)} serverPort={config?.port} />
+        <ApiAccessSection adminToken={adminToken || undefined} onForbidden={() => setNeedsToken(true)} serverPort={config?.port} />
 
         <form className="settings-section" onSubmit={submit}>
           <h3>{config?.hasKey ? "Replace key" : "Set key"}</h3>
@@ -174,18 +248,6 @@ function SettingsDialogInner() {
               {showKey ? "Hide" : "Show"}
             </button>
           </div>
-          {needsToken && (
-            <label className="field">
-              <span>Admin token (EODVIEW_ADMIN_TOKEN)</span>
-              <input
-                className="input mono"
-                type="password"
-                autoComplete="off"
-                value={adminToken}
-                onChange={(e) => setAdminToken(e.target.value)}
-              />
-            </label>
-          )}
           <p className="hint">
             The key is validated against EODHD, stored on the server in <code>server/data/config.json</code> and applied
             immediately. It is never sent to the browser.

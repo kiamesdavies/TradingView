@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import type { Alert, AlertEvent, Layout, Watchlist } from "@eodview/shared";
 import { api } from "../api/http";
 import { DEFAULT_LAYOUT, useStore } from "../state/store";
+import { loadAdminToken } from "./adminToken";
 import { configApi } from "./configApi";
 import { normalizeLayout } from "./format";
 import { useShell } from "./shellStore";
@@ -31,7 +32,7 @@ async function boot(signal: { cancelled: boolean }): Promise<void> {
     api.get<Watchlist[]>("/watchlists"),
     api.get<Alert[]>("/alerts"),
     api.get<AlertEvent[]>("/alerts/history?limit=100"),
-    configApi.get(),
+    configApi.get(loadAdminToken() ?? undefined),
   ]);
   if (signal.cancelled) return;
 

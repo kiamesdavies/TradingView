@@ -20,3 +20,8 @@
   font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; user-select: all;
 }
 .connect-cmd .hint { margin: 0; }
+
+/* Settings → admin token unlock */
+.unlock-row { display: flex; gap: 6px; margin-top: 8px; }
+.unlock-row .input { flex: 1 1 auto; min-width: 0; }
+.link-btn { background: none; border: 0; padding: 0; color: var(--accent, #2962ff); cursor: pointer; font: inherit; text-decoration: underline; }
