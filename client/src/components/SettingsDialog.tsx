@@ -169,7 +169,6 @@ function SettingsDialogInner() {
                 setKey(e.target.value);
                 setSaved(false);
               }}
-              autoFocus
             />
             <button type="button" className="btn btn-ghost" onClick={() => setShowKey((v) => !v)}>
               {showKey ? "Hide" : "Show"}
