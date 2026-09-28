@@ -3,7 +3,8 @@ import type {
   IChartApiBase, IPrimitivePaneRenderer, IPrimitivePaneView, ISeriesApi, ISeriesPrimitive, ISeriesPrimitiveAxisView,
   Logical, PrimitiveHoveredItem, SeriesAttachedParameter, SeriesType, Time,
 } from "lightweight-charts";
-import type { Drawing, UnixSeconds } from "@eodview/shared";
+import type { Drawing, DrawingPoint, UnixSeconds } from "@eodview/shared";
+import { measure, measureLabel } from "./measure";
 import {
   HANDLE_RADIUS, barInterval, bounds, fractionalCoordinate, fractionalLogical, hitTest, projectDrawing, timeToLogical, withAlpha,
   type Hit, type Projector, type Pt, type ScreenShape,
@@ -18,6 +19,8 @@ export interface DrawingsRenderState {
   selectedId: string | null;
   /** In-progress drawing that follows the mouse while it is being created. */
   preview: Drawing | null;
+  /** Measure tool: start and end point of the current measurement (not a saved drawing). */
+  measure?: { a: DrawingPoint; b: DrawingPoint } | null;
 }
 
 export interface DrawingsStyle {
@@ -31,6 +34,8 @@ export const DARK_STYLE: DrawingsStyle = { handleFill: "#131722", labelColor: "#
 export const LIGHT_STYLE: DrawingsStyle = { handleFill: "#ffffff", labelColor: "#131722" };
 
 interface RenderItem { drawing: Drawing; shape: ScreenShape; selected: boolean }
+
+interface MeasureShape { a: Pt; b: Pt; up: boolean; lines: [string, string] }
 
 const FONT = "11px -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif";
 
@@ -53,10 +58,62 @@ class DrawingsRenderer implements IPrimitivePaneRenderer {
 
   draw(target: RenderTarget): void {
     const items = this.source.renderItems();
-    if (items.length === 0) return;
+    const m = this.source.measureShape();
+    if (items.length === 0 && !m) return;
     target.useMediaCoordinateSpace((scope) => {
       for (const it of items) this.drawItem(scope, it);
+      if (m) this.drawMeasure(scope, m);
     });
+  }
+
+  private drawMeasure(scope: MediaScope, m: MeasureShape): void {
+    const { context: ctx, mediaSize } = scope;
+    const color = m.up ? "#26a69a" : "#ef5350";
+    const r = bounds(m.a, m.b);
+    ctx.save();
+    ctx.fillStyle = withAlpha(color, 0.18);
+    ctx.fillRect(r.left, r.top, r.right - r.left, r.bottom - r.top);
+    // arrows: vertical (price) through the middle, horizontal (time) through the middle
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1.5;
+    const cx = (r.left + r.right) / 2;
+    const cy = (r.top + r.bottom) / 2;
+    this.arrow(ctx, { x: cx, y: m.a.y }, { x: cx, y: m.b.y });
+    this.arrow(ctx, { x: m.a.x, y: cy }, { x: m.b.x, y: cy });
+    // label box below (up) or above (down) the rectangle
+    ctx.font = "600 12px -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif";
+    const w = Math.max(...m.lines.map((l) => ctx.measureText(l).width)) + 16;
+    const h = 38;
+    let x = Math.min(Math.max(cx - w / 2, 2), mediaSize.width - w - 2);
+    let y = m.up ? r.top - h - 6 : r.bottom + 6;
+    if (y < 2) y = r.bottom + 6;
+    if (y + h > mediaSize.height - 2) y = Math.max(2, r.top - h - 6);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, 4);
+    ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(m.lines[0], x + w / 2, y + 12);
+    ctx.font = "12px -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif";
+    ctx.fillText(m.lines[1], x + w / 2, y + 27);
+    ctx.restore();
+  }
+
+  private arrow(ctx: CanvasRenderingContext2D, from: Pt, to: Pt): void {
+    const len = Math.hypot(to.x - from.x, to.y - from.y);
+    if (len < 2) return;
+    this.line(ctx, from, to);
+    const ang = Math.atan2(to.y - from.y, to.x - from.x);
+    const s = Math.min(7, len / 2);
+    ctx.beginPath();
+    ctx.moveTo(to.x, to.y);
+    ctx.lineTo(to.x - s * Math.cos(ang - 0.45), to.y - s * Math.sin(ang - 0.45));
+    ctx.lineTo(to.x - s * Math.cos(ang + 0.45), to.y - s * Math.sin(ang + 0.45));
+    ctx.closePath();
+    ctx.fill();
   }
 
   private drawItem(scope: MediaScope, it: RenderItem): void {
@@ -262,6 +319,19 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
   }
 
   renderItems(): readonly RenderItem[] { return this.items; }
+
+  /** Screen geometry + label text of the active measurement, or null. */
+  measureShape(): MeasureShape | null {
+    const m = this.state.measure;
+    if (!m) return null;
+    const ax = this.timeToX(m.a.time);
+    const bx = this.timeToX(m.b.time);
+    const ay = this.priceToY(m.a.price);
+    const by = this.priceToY(m.b.price);
+    if (ax === null || bx === null || ay === null || by === null) return null;
+    const res = measure(m.a, m.b, this.times());
+    return { a: { x: ax, y: ay }, b: { x: bx, y: by }, up: res.up, lines: measureLabel(res, (p) => this.formatPrice(p)) };
+  }
 
   times(): readonly UnixSeconds[] {
     const t = this.getTimes();

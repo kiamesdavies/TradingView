@@ -15,7 +15,8 @@ export const DEFAULT_LAYOUT: Layout = {
 };
 
 export interface UiState {
-  drawingTool: DrawingType | "cursor";
+  /** "measure" is the ruler: a temporary measurement, never saved. */
+  drawingTool: DrawingType | "cursor" | "measure";
   drawingColor: string;
   searchOpen: boolean;
   indicatorsOpen: boolean;

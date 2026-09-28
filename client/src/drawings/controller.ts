@@ -13,6 +13,9 @@ const DRAG_CREATE_PX = 5;
 
 interface Pending { type: DrawingType; first: DrawingPoint; firstPx: Pt; color: string }
 
+/** Measure tool state: a temporary ruler, never saved. `done` once the second point is set. */
+interface Measuring { a: DrawingPoint; aPx: Pt; b: DrawingPoint; done: boolean }
+
 interface DragState {
   id: string;
   part: HitPart;
@@ -67,6 +70,7 @@ export class DrawingController {
   private pending: Pending | null = null;
   private preview: Drawing | null = null;
   private drag: DragState | null = null;
+  private measuring: Measuring | null = null;
   /** Tool reset is deferred to pointerup so the chart does not start panning mid-click. */
   private resetToolOnUp = false;
   private disposed = false;
@@ -128,15 +132,20 @@ export class DrawingController {
 
   private pushState(): void {
     const s = useDrawingStore.getState();
-    this.primitive.setState({ drawings: s.drawings, selectedId: s.selectedId, preview: this.preview });
+    const m = this.measuring;
+    this.primitive.setState({
+      drawings: s.drawings, selectedId: s.selectedId, preview: this.preview, measure: m ? { a: m.a, b: m.b } : null,
+    });
   }
 
-  private tool(): DrawingType | "cursor" {
+  private tool(): DrawingType | "cursor" | "measure" {
     return useStore.getState().ui.drawingTool;
   }
 
   private onToolChange(): void {
     this.cancelPending();
+    // switching back to the pointer after a finished measurement keeps it on screen
+    if (this.tool() !== "cursor") this.clearMeasure();
     const creating = this.tool() !== "cursor";
     this.primitive.interactive = !creating;
     this.lock.set("tool", creating);
@@ -190,6 +199,24 @@ export class DrawingController {
     return time === null ? null : { time, price };
   }
 
+  // ---------------------------------------------------------------- measure
+
+  private clearMeasure(): void {
+    if (!this.measuring) return;
+    this.measuring = null;
+    this.lock.set("measure", false);
+    this.pushState();
+  }
+
+  private finishMeasure(): void {
+    const m = this.measuring;
+    if (!m) return;
+    m.done = true;
+    this.lock.set("measure", false);
+    this.pushState();
+    if (this.tool() === "measure") this.resetToolOnUp = true;
+  }
+
   // ---------------------------------------------------------------- pointer
 
   private onPointerDown(e: PointerEvent): void {
@@ -197,6 +224,31 @@ export class DrawingController {
     const p = this.local(e);
     if (!p) return;
     const tool = this.tool();
+
+    // measure: an in-progress measurement is finished by a second click (click-click mode)
+    if (this.measuring && !this.measuring.done) {
+      e.preventDefault();
+      e.stopPropagation();
+      const pt = this.toPoint(p);
+      if (pt) this.measuring.b = pt;
+      this.finishMeasure();
+      return;
+    }
+    // any click dismisses a finished measurement
+    const hadMeasure = this.measuring !== null;
+    if (hadMeasure) this.clearMeasure();
+
+    if (tool === "measure" || (tool === "cursor" && e.shiftKey)) {
+      e.preventDefault();
+      e.stopPropagation();
+      const pt = this.toPoint(p);
+      if (!pt) return;
+      this.measuring = { a: pt, aPx: p, b: pt, done: false };
+      this.lock.set("measure", true);
+      this.pushState();
+      return;
+    }
+    if (hadMeasure && tool === "cursor") return; // the click only dismissed the ruler
 
     if (tool !== "cursor") {
       e.preventDefault();
@@ -234,6 +286,15 @@ export class DrawingController {
   }
 
   private onPointerMove(e: PointerEvent): void {
+    if (this.measuring && !this.measuring.done) {
+      const p = this.local(e, true);
+      const pt = p && this.toPoint(p);
+      if (pt) {
+        this.measuring.b = pt;
+        this.pushState();
+      }
+      return;
+    }
     if (this.drag) {
       this.dragTo(e);
       return;
@@ -246,6 +307,16 @@ export class DrawingController {
   }
 
   private onPointerUp(e: PointerEvent): void {
+    // drag-to-measure: release farther than a click from the start finishes it
+    const m = this.measuring;
+    if (m && !m.done && e.button === 0) {
+      const p = this.local(e, true);
+      if (p && Math.hypot(p.x - m.aPx.x, p.y - m.aPx.y) > DRAG_CREATE_PX) {
+        const pt = this.toPoint(p);
+        if (pt) m.b = pt;
+        this.finishMeasure();
+      }
+    }
     if (this.drag) {
       this.dragTo(e);
       this.drag = null;
@@ -321,8 +392,10 @@ export class DrawingController {
         this.drag = null;
         this.lock.set("drag", false);
       }
-      const hadWork = this.pending !== null || this.tool() !== "cursor" || useDrawingStore.getState().selectedId !== null;
+      const hadWork = this.pending !== null || this.measuring !== null || this.tool() !== "cursor"
+        || useDrawingStore.getState().selectedId !== null;
       this.cancelPending();
+      this.clearMeasure();
       if (this.tool() !== "cursor") useStore.getState().setUi({ drawingTool: "cursor" });
       useDrawingStore.getState().select(null);
       if (hadWork) e.preventDefault();

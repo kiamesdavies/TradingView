@@ -4,7 +4,7 @@ import { useStore } from "../state/store";
 import { useDrawingStore } from "./drawingStore";
 import "./drawings.css";
 
-type Tool = DrawingType | "cursor";
+type Tool = DrawingType | "cursor" | "measure";
 
 const svg = (children: ReactNode) => (
   <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="1.5"
@@ -17,6 +17,13 @@ const TOOLS: { tool: Tool; title: string; icon: ReactNode }[] = [
   {
     tool: "cursor", title: "Cursor (Esc)",
     icon: svg(<path d="M6 3.5 L6 17 L9.5 13.6 L12 19 L14.2 18 L11.7 12.7 L16.5 12.4 Z" />),
+  },
+  {
+    tool: "measure", title: "Measure: price change, %, bars and time (or Shift+drag)",
+    icon: svg(<>
+      <rect x="2.5" y="7.5" width="17" height="7" rx="1" transform="rotate(-45 11 11)" />
+      <path d="M7.2 11.8 L8.8 13.4 M9.6 9.4 L11.2 11 M12 7 L13.6 8.6 M14.4 4.6 L16 6.2" transform="translate(-0.6 1.1)" />
+    </>),
   },
   {
     tool: "trendline", title: "Trend line",
@@ -46,7 +53,7 @@ const TOOLS: { tool: Tool; title: string; icon: ReactNode }[] = [
     icon: svg(<rect x="4" y="6" width="14" height="10" rx="0.5" />),
   },
   {
-    tool: "fib", title: "Fib retracement",
+    tool: "fib", title: "Fib retracement: drag from a swing low to a swing high (or high to low) to see pullback levels 23.6%–78.6%",
     icon: svg(<>
       <line x1="3" y1="4" x2="19" y2="4" />
       <line x1="3" y1="9" x2="19" y2="9" />
