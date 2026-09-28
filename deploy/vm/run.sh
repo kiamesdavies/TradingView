@@ -13,7 +13,7 @@ umask 077
   echo "EODVIEW_ADMIN_TOKEN=$(secret eodview-admin-token)"
   echo "EODVIEW_API_REQUIRE_TOKEN=1"
   echo "EODVIEW_ALLOWED_ORIGINS=https://${HOSTNAME_PUBLIC}"
-  [ -f /opt/eodview/app.env ] && cat /opt/eodview/app.env   # optional overrides, e.g. EODVIEW_MARKETS
+  if [ -f /opt/eodview/app.env ]; then cat /opt/eodview/app.env; fi   # optional overrides, e.g. EODVIEW_MARKETS
 } > .env.app.tmp && mv .env.app.tmp .env.app
 echo "TUNNEL_TOKEN=$(secret cloudflared-tunnel-token)" > .env.tunnel.tmp && mv .env.tunnel.tmp .env.tunnel
 
