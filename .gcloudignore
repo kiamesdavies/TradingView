@@ -1,0 +1,9 @@
+# Source uploaded to Cloud Build (gcloud builds submit). Mirrors .dockerignore.
+.git
+.gitignore
+**/node_modules
+**/dist
+server/data
+deploy
+docs
+.env*

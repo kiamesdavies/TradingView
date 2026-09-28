@@ -6,3 +6,7 @@ server/data/
 .env
 .env.*
 .DS_Store
+deploy/.env.local
+deploy/terraform/.terraform/
+deploy/terraform/*.tfplan
+deploy/terraform/*.tfstate*

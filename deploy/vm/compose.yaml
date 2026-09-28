@@ -1,0 +1,27 @@
+# Deployed to /opt/eodview on the VM by ../deploy.sh. Nothing is published on the host:
+# cloudflared reaches the app over the compose network and dials out to Cloudflare.
+name: eodview
+
+services:
+  app:
+    image: ${IMAGE:?IMAGE is set by run.sh}
+    restart: unless-stopped
+    env_file: .env.app
+    volumes:
+      - /opt/eodview/data:/data
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    env_file: .env.tunnel
+    depends_on:
+      app:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

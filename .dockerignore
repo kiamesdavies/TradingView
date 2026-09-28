@@ -1,0 +1,9 @@
+**/node_modules
+**/dist
+server/data
+deploy
+docs
+.git
+.env*
+**/*.test.ts
+**/__fixtures__

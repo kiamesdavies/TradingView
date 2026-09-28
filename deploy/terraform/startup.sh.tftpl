@@ -1,0 +1,28 @@
+#!/bin/bash
+# Runs on every boot. Installs Docker once, then (re)starts EODView if it has been deployed.
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+if ! command -v docker >/dev/null 2>&1; then
+  apt-get update
+  apt-get install -y ca-certificates curl
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+  . /etc/os-release
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $${VERSION_CODENAME} stable" \
+    >/etc/apt/sources.list.d/docker.list
+  apt-get update
+  apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  systemctl enable --now docker
+fi
+
+gcloud auth configure-docker ${registry} --quiet
+
+install -d -m 0750 /opt/eodview
+install -d -m 0750 -o 1000 -g 1000 /opt/eodview/data
+
+if [ -x /opt/eodview/run.sh ] && [ -f /opt/eodview/IMAGE ]; then
+  /opt/eodview/run.sh "$(cat /opt/eodview/IMAGE)"
+fi
+touch /var/lib/eodview-host-ready
