@@ -5,7 +5,7 @@ set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
 set -a; . "$DIR/.env.local"; set +a
-ACCOUNT="${GCP_ACCOUNT:-you@example.com}"
+ACCOUNT="${GCP_ACCOUNT:?set GCP_ACCOUNT (your Google account) in deploy/.env.local}"
 REGION="${REGION:-europe-west1}"
 ZONE="${ZONE:-europe-west1-b}"
 VM="${VM_NAME:-eodview}"

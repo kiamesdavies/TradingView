@@ -5,7 +5,7 @@
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 set -a; . "$DIR/.env.local"; set +a
-ACCOUNT="${GCP_ACCOUNT:-you@example.com}"
+ACCOUNT="${GCP_ACCOUNT:?set GCP_ACCOUNT (your Google account) in deploy/.env.local}"
 export GOOGLE_OAUTH_ACCESS_TOKEN="$(gcloud auth print-access-token --account="$ACCOUNT")"
 export TF_VAR_project_id="$PROJECT_ID"
 cd "$DIR/terraform"

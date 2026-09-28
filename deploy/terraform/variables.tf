@@ -32,9 +32,8 @@ variable "boot_disk_size_gb" {
 }
 
 variable "admin_user" {
-  description = "Google identity allowed to administer the VM through OS Login and IAP."
+  description = "Google identity allowed to administer the VM through OS Login and IAP (TF_VAR_admin_user)."
   type        = string
-  default     = "you@example.com"
 }
 
 variable "hostname" {
@@ -48,7 +47,6 @@ variable "cloudflare_zone_name" {
 }
 
 variable "access_emails" {
-  description = "Emails allowed through Cloudflare Access (Google or one-time PIN login)."
+  description = "Emails allowed through Cloudflare Access (TF_VAR_access_emails, e.g. [\"you@example.com\"])."
   type        = list(string)
-  default     = ["you@example.com"]
 }

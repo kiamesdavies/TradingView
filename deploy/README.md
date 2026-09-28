@@ -1,6 +1,6 @@
 # Deploying EODView to GCP
 
-One small VM in a personal GCP project, reachable only through Cloudflare (Tunnel + Access). No public IP and no open
+One small VM in a GCP project, reachable only through Cloudflare (Tunnel + Access). No public IP and no open
 inbound ports.
 
 ```
@@ -24,7 +24,7 @@ browser / agent ──HTTPS──> Cloudflare Access ──> Cloudflare Tunnel �
 
 ```bash
 # 0. config
-cp deploy/.env.local.example deploy/.env.local   # fill in PROJECT_ID, hostname, zone, CLOUDFLARE_API_TOKEN
+cp deploy/.env.local.example deploy/.env.local   # fill in project, your Google account, hostname, zone, Cloudflare token
 
 # 1. project, billing, APIs, state bucket (uses GCP_ACCOUNT from .env.local)
 deploy/bootstrap.sh eodview-prod <billing-account-id>

@@ -2,9 +2,11 @@
 # One-time: create the personal GCP project, link billing, enable APIs, create the Terraform state bucket.
 # Usage: deploy/bootstrap.sh <project-id> <billing-account-id>
 set -euo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$DIR/.env.local" ]; then set -a; . "$DIR/.env.local"; set +a; fi
 PROJECT="${1:?project id}"
 BILLING="${2:?billing account id}"
-ACCOUNT="${GCP_ACCOUNT:-you@example.com}"
+ACCOUNT="${GCP_ACCOUNT:?set GCP_ACCOUNT (your Google account) in deploy/.env.local}"
 REGION="${REGION:-europe-west1}"
 g() { gcloud --account="$ACCOUNT" "$@"; }
 
