@@ -10,3 +10,13 @@
 .api-actions { text-align: right; white-space: nowrap; }
 .api-created { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--warn); border-radius: 6px; font-size: 12px; }
 .api-secret { user-select: all; }
+
+/* Settings → Connect & access */
+.connect-toggle { background: none; border: 0; padding: 0; color: inherit; font: inherit; cursor: pointer; }
+.connect-cmd { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.connect-cmd-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+.connect-cmd pre {
+  margin: 0; padding: 6px 8px; border-radius: 4px; background: var(--bg-hover);
+  font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; user-select: all;
+}
+.connect-cmd .hint { margin: 0; }

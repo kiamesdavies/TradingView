@@ -420,3 +420,15 @@ export interface ApiTokenView {
 // GET    /api/tokens        -> ApiTokenView[]                     (config-guarded)
 // POST   /api/tokens {name} -> ApiTokenView & { token: string }   (token shown once)
 // DELETE /api/tokens/:id    -> { ok: true }
+
+// ======================= Deployment info (Settings → "Connect & access") =======================
+// GET /api/deployment -> DeploymentInfo. Unguarded: only non-secret values, set by deploy/deploy.sh via env.
+export interface DeploymentInfo {
+  hosted: boolean;                 // true when running on the hosted VM (EODVIEW_PUBLIC_URL set)
+  publicUrl: string | null;        // e.g. https://charts.example.com
+  gcpProject: string | null;
+  gcpAccount: string | null;
+  adminTokenSecret: string | null; // Secret Manager secret holding EODVIEW_ADMIN_TOKEN
+  cfAccessClientId: string | null; // Cloudflare Access service token client id (not secret)
+  repoPath: string | null;         // local checkout used for deploys (for the tf.sh command)
+}

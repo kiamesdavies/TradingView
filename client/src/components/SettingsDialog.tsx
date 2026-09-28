@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import type { ApiTokenView, ConfigView } from "@eodview/shared";
+import type { ApiTokenView, ConfigView, DeploymentInfo } from "@eodview/shared";
+import { api } from "../api/http";
+import { connectCommands } from "./connectInfo";
 import { ApiRequestError } from "../api/http";
 import { claudeMcpAddCommand, isLoopbackHost, mcpUrl, serverOrigin, TOKEN_ENV } from "../screener/apiLinks";
 import { copyText, tokensApi, type CreatedToken } from "../screener/tokensApi";
@@ -100,6 +102,8 @@ function SettingsDialogInner() {
     <Modal title="Settings" onClose={close} width={520} className="settings-modal">
       <div className="modal-body">
         {notice && <div className="notice">{notice}</div>}
+
+        <ConnectSection />
 
         <section className="settings-section">
           <h3>EODHD API key</h3>
@@ -335,7 +339,7 @@ function ApiAccessSection({ adminToken, onForbidden, serverPort }: {
       </dl>
       {devProxy && (
         <p className="hint">
-          Dev mode: the page runs on Vite (5173), which doesn't proxy <code>/mcp</code>, so the URL points at the server
+          Dev mode: the page runs on Vite (5173); the URL points at the server
           port{serverPort ? ` (${serverPort})` : " (3001 assumed)"}.
         </p>
       )}
@@ -420,6 +424,63 @@ function ApiAccessSection({ adminToken, onForbidden, serverPort }: {
         <div className="form-row end">
           <button type="button" className="btn btn-ghost" onClick={() => { setListError(null); setTokens(null); load(); }}>Retry</button>
         </div>
+      )}
+    </section>
+  );
+}
+
+// ---------------- Connect & access (how to get the admin token / hook up agents) ----------------
+
+function ConnectSection() {
+  const [info, setInfo] = useState<DeploymentInfo | null>(null);
+  const [open, setOpen] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .get<DeploymentInfo>("/deployment")
+      .then((d) => alive && setInfo(d))
+      .catch(() => undefined); // older server: section just stays hidden
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (!info) return null;
+  const cmds = connectCommands(info, location.origin);
+
+  return (
+    <section className="settings-section connect-section">
+      <h3>
+        <button type="button" className="connect-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+          {open ? "▾" : "▸"} Connect &amp; access
+        </button>
+      </h3>
+      {open && (
+        <>
+          {info.hosted && (
+            <p className="hint">
+              Hosted at <code>{info.publicUrl}</code> behind Cloudflare Access
+              {info.gcpProject && (
+                <>
+                  {" "}
+                  (GCP project <code>{info.gcpProject}</code>)
+                </>
+              )}
+              . Keep these handy — this is the only place they are written down in the app.
+            </p>
+          )}
+          {cmds.map((c) => (
+            <div key={c.id} className="connect-cmd">
+              <div className="connect-cmd-head">
+                <span>{c.title}</span>
+                <CopyButton text={c.command} />
+              </div>
+              <pre className="mono">{c.command}</pre>
+              {c.note && <p className="hint">{c.note}</p>}
+            </div>
+          ))}
+        </>
       )}
     </section>
   );
